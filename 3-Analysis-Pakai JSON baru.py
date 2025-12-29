@@ -1,20 +1,22 @@
 import sys
 import json
 import math
-import openseespy.opensees as ops
+import openseespy.opensees as ops   
 
 # ============================================================================
-# KONFIGURASI FISIKA
+# 1. KONFIGURASI FISIKA
 # ============================================================================
-G_ACC = 9.81            
-TOLERANCE_Z0 = 100.0    
+G_ACC = 9.81              # Gravitasi (m/s^2)
+TOLERANCE_COORD = 1.0     # Toleransi (mm)
+
+# DEFAULT_PRESSURE dihapus karena akan diambil dari JSON
 
 def get_model_data(input_path):
     try:
         with open(input_path, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"[ERROR] Reading JSON: {e}")
+        print(f"[ERROR] Gagal membaca JSON: {e}")
         return None
 
 def get_section_properties(sec):
@@ -25,32 +27,94 @@ def get_section_properties(sec):
     tf = float(sec.get('tf_mm', 0))
     A = float(sec.get('Area_mm2', 1000))
     
-    # Inersia
-    # Ix (JSON) = Strong Axis -> OpenSees Iz (Local Z)
-    # Iy (JSON) = Weak Axis   -> OpenSees Iy (Local Y)
+    # Inersia (Mapping: Ix=Strong, Iy=Weak)
     Ix_json = float(sec.get('Ix_mm4', 10000)) 
     Iy_json = float(sec.get('Iy_mm4', 1000))
     
-    Ops_Iz = Ix_json 
-    Ops_Iy = Iy_json 
-    
     # Torsi
     J_raw = float(sec.get('J_mm4', 0))
-    J = J_raw if J_raw > 100.0 else (Ops_Iy + Ops_Iz) * 0.01
+    J = J_raw if J_raw > 10.0 else (Ix_json + Iy_json) * 0.01
 
     # Shear Areas
-    # Avy (Lateral) -> Flange
-    # Avz (Vertical) -> Web
     Avy = 2.0 * b * tf  
     Avz = d * tw        
     
     if Avy <= 1.0: Avy = A * 0.5
     if Avz <= 1.0: Avz = A * 0.5
     
-    return A, J, Ops_Iy, Ops_Iz, Avy, Avz
+    return A, J, Ix_json, Iy_json, Avy, Avz
 
-def run_load_case(elements_list, case_type):
-    # Struktur Default Return
+def apply_element_loads(element_data, case_type):
+    """
+    Parse dan kembalikan parameter beban dari data JSON elemen.
+    
+    Args:
+        element_data: Dictionary data elemen dari JSON
+        case_type: Tipe beban ('SW', 'LL', 'COMB')
+    
+    Returns:
+        dict: {
+            'has_loads': bool,
+            'point_loads': [(location_ratio, force_N, direction)],
+            'distributed_loads': [(w_start, w_end, direction)],
+            'load_summary': str
+        }
+    """
+    result = {
+        'has_loads': False,
+        'point_loads': [],
+        'distributed_loads': [],
+        'load_summary': 'No specific loads'
+    }
+    
+    # Hanya proses jika case_type adalah LL atau COMB
+    if case_type not in ['LL', 'COMB']:
+        return result
+    
+    loads_data = element_data.get('loads')
+    if not loads_data or loads_data == 'null':
+        return result
+    
+    result['has_loads'] = True
+    
+    # PRIORITAS 1: Parse Distributed Load (lebih akurat dari JSON Revit)
+    q_peak = loads_data.get('q_peak_dist', 0)
+    load_shape = loads_data.get('load_shape_origin', 'Uniform')
+    
+    if q_peak > 0:
+        # Konversi dari N/mm ke beban merata
+        if load_shape == 'Triangle':
+            # Beban segitiga: mulai dari 0, puncak di tengah/ujung
+            # q_peak adalah nilai maksimum, NOT averaged
+            result['distributed_loads'].append((0.0, q_peak, 'Y'))
+            result['load_summary'] = f"Triangle: 0->{q_peak:.2f}N/mm"
+        else:
+            # Uniform (default)
+            result['distributed_loads'].append((q_peak, q_peak, 'Y'))
+            result['load_summary'] = f"Uniform: {q_peak:.2f}N/mm"
+        
+        # Jika ada distributed load, SKIP point load (hindari duplikasi)
+        return result
+    
+    # PRIORITAS 2: Parse Point Load (hanya jika tidak ada distributed load)
+    point_load = loads_data.get('point_load_N', 0)
+    location = loads_data.get('location_ratio', 0.5)
+    
+    if point_load > 0:
+        # Direction: -Y untuk gravitasi (arah vertikal ke bawah)
+        result['point_loads'].append((location, point_load, 'Y'))
+        result['load_summary'] = f"Point: {point_load/1000:.1f}kN @ {location*100:.0f}%"
+    
+    return result
+
+# ============================================================================
+# 2. FUNGSI ANALISIS PER KASUS BEBAN (CORE LOGIC)
+# ============================================================================
+def run_load_case(data, case_type):
+    """
+    Menjalankan analisis untuk satu tipe beban (SW, LL, atau COMB).
+    """
+    # Struktur Data Output
     res = {
         "status": "Failed",
         "nodes": {}, 
@@ -58,160 +122,182 @@ def run_load_case(elements_list, case_type):
         "summary": {"total_reaction_z": 0}
     }
 
+    elements_list = data.get('model_elements', [])
+    
+    # --- UPDATE: AMBIL PRESSURE LOAD DARI JSON ---
+    pressure_list = data.get('global_pressure_loads', [])
+    # Ambil nilai pertama dari list, jika kosong gunakan 0.0
+    FLOOR_PRESSURE = float(pressure_list[0]) if pressure_list else 0.0
+
     try:
-        # --- 1. SETUP MODEL ---
+        # --- RESET MODEL ---
         ops.wipe()
         ops.model('basic', '-ndm', 3, '-ndf', 6)
         
-        # --- 2. PRE-PROCESSING (SPLIT BEAM) ---
+        # --- NODE MAPPING ---
         node_map = {}       
         node_coords = {}    
         next_node_id = 1
-        final_elements = [] 
-        element_segments_map = {} 
-
-        def get_or_create_node(coords):
+        
+        def get_node_id(coords):
             nonlocal next_node_id
-            pt = tuple(round(c, 4) for c in coords)
-            if pt not in node_map:
-                node_map[pt] = next_node_id
-                node_coords[next_node_id] = pt
+            # Gunakan string format 1 desimal sebagai key unik
+            key = f"{coords[0]:.1f}_{coords[1]:.1f}_{coords[2]:.1f}"
+            if key not in node_map:
+                node_map[key] = next_node_id
+                node_coords[next_node_id] = coords
                 next_node_id += 1
-            return node_map[pt]
+            return node_map[key]
 
-        # Loop Elements & Build Geometry Memory
+        # --- PRE-PROCESS GEOMETRY ---
+        processed_elements = []
         for entry in elements_list:
-            original_id = entry['id']
             p1 = entry['topology']['start_node']
             p2 = entry['topology']['end_node']
-            fam_type = entry.get('type', 'Beam')
-            element_segments_map[original_id] = []
+            
+            n1 = get_node_id(p1)
+            n2 = get_node_id(p2)
+            
+            dx, dy, dz = p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]
+            L = math.sqrt(dx**2 + dy**2 + dz**2)
+            
+            # Deteksi Vertikal (Kolom) vs Horizontal (Balok)
+            is_vertical = abs(dz) > abs(dx) and abs(dz) > abs(dy)
+            
+            processed_elements.append({
+                'id': entry['id'],
+                'nodes': [n1, n2],
+                'is_vertical': is_vertical,
+                'length': L,
+                'raw': entry
+            })
 
-            P_total = 0.0
-            if case_type in ['LL', 'COMB'] and 'loads' in entry and entry['loads']:
-                P_total = float(entry['loads'].get('point_load_N', 0.0))
-
-            # Split Logic (Beam -> 4 Segmen)
-            if 'Beam' in fam_type:
-                dx = p2[0] - p1[0]
-                dy = p2[1] - p1[1]
-                dz = p2[2] - p1[2]
-                
-                nodes_temp = []
-                for i in range(5):
-                    ratio = i * 0.25
-                    coord = (p1[0] + ratio*dx, p1[1] + ratio*dy, p1[2] + ratio*dz)
-                    nodes_temp.append(get_or_create_node(coord))
-                
-                for i in range(4):
-                    seg_id = original_id + (i * 1000000)
-                    applied_load = P_total if i == 1 else 0.0
-                    applied_node = nodes_temp[2] if i == 1 else None # Node tengah
-                    
-                    seg_data = {
-                        'id': seg_id, 
-                        'nodes': [nodes_temp[i], nodes_temp[i+1]], 
-                        'type': fam_type, 
-                        'raw': entry, 
-                        'load_val': applied_load,
-                        'load_node': applied_node
-                    }
-                    final_elements.append(seg_data)
-                    element_segments_map[original_id].append(seg_id)
-            else:
-                # Kolom Utuh
-                n1 = get_or_create_node(p1)
-                n2 = get_or_create_node(p2)
-                seg_data = {
-                    'id': original_id,
-                    'nodes': [n1, n2],
-                    'type': fam_type, 
-                    'raw': entry, 
-                    'load_val': 0, 
-                    'load_node': None
-                }
-                final_elements.append(seg_data)
-                element_segments_map[original_id].append(original_id)
-
-        # --- [CRITICAL STEP] POPULATE NODES JSON BEFORE ANALYSIS ---
-        # Ini menjamin 'coords' selalu ada meskipun analisis gagal
-        all_z = []
-        for nid, coords in node_coords.items():
-            all_z.append(coords[2])
-            res["nodes"][nid] = {
-                "coords": coords,
-                "disp": [0.0]*6, # Default 0
-                "reaction": None
-            }
-        
-        # --- 3. BUILD OPENSEES MODEL ---
-        if not node_coords: return res
+        # --- BUILD NODES ---
+        all_z = [c[2] for c in node_coords.values()]
         min_z = min(all_z) if all_z else 0.0
         fixed_nodes = set()
 
-        # Create Nodes & Fixity
-        for nid, (x, y, z) in node_coords.items():
-            ops.node(nid, x, y, z)
-            if abs(z - min_z) < TOLERANCE_Z0:
+        for nid, coords in node_coords.items():
+            ops.node(nid, *coords)
+            
+            # Simpan koordinat ke output
+            res["nodes"][nid] = {
+                "coords": coords,
+                "disp": [0.0]*6,
+                "reaction": None
+            }
+            
+            # Tumpuan Jepit (Fixed)
+            if abs(coords[2] - min_z) < 100.0:
                 ops.fix(nid, 1, 1, 1, 1, 1, 1)
                 fixed_nodes.add(nid)
 
-        # Transformasi
-        ops.geomTransf('Linear', 1, 1, 0, 0) # Col (Local Z = Global X)
-        ops.geomTransf('Linear', 2, 0, 0, 1) # Beam (Local Z = Global Z)
+        # --- BUILD ELEMENTS & TRANSFORMS ---
+        # Tag 1 (Kolom): Local Z aligns Global X
+        ops.geomTransf('Linear', 1, 1, 0, 0)
+        # Tag 2 (Balok): Local Z aligns Global Z
+        ops.geomTransf('Linear', 2, 0, 0, 1) 
 
-        # Create Elements
-        for item in final_elements:
-            el_id = item['id']
-            nodes = item['nodes']
-            raw = item['raw']
-            mat = raw['material']
-            sec = raw['section']
+        for item in processed_elements:
+            sec = item['raw']['section']
+            mat = item['raw']['material']
             
             E = float(mat.get('E_MPa', 205000))
-            G_mod = float(mat.get('G_MPa', 80000))
-            A, J, Ops_Iy, Ops_Iz, Avy, Avz = get_section_properties(sec)
+            G = float(mat.get('G_MPa', 80000))
+            A, J, Ix, Iy, Avy, Avz = get_section_properties(sec)
             
-            transf_tag = 1 if 'Column' in item['type'] else 2
+            # Mapping Stiffness Matriks
+            if item['is_vertical']:
+                transf_tag = 1
+                # Kolom: Iz=Strong(Ix), Iy=Weak(Iy)
+                Ops_Iz = Ix
+                Ops_Iy = Iy
+            else:
+                transf_tag = 2
+                # Balok: Iy=Strong(Ix) -> menahan gravitasi
+                Ops_Iy = Ix 
+                Ops_Iz = Iy 
             
-            ops.element('ElasticTimoshenkoBeam', el_id, nodes[0], nodes[1], 
-                        E, G_mod, A, J, Ops_Iy, Ops_Iz, Avy, Avz, transf_tag)
+            ops.element('ElasticTimoshenkoBeam', item['id'], item['nodes'][0], item['nodes'][1], 
+                        E, G, A, J, Ops_Iy, Ops_Iz, Avy, Avz, transf_tag)
 
-        # --- 4. LOADS ---
+        # --- LOAD APPLICATION ---
         ops.timeSeries('Linear', 1)
         ops.pattern('Plain', 1, 1)
 
-        # Self Weight
+        # A. SELF WEIGHT
         if case_type in ['SW', 'COMB']:
-            for item in final_elements:
-                raw = item['raw']
-                mat = raw['material']
-                sec = raw['section']
+            for item in processed_elements:
+                mat = item['raw']['material']
+                rho = float(mat.get('Rho_kg/m3', 0))
+                if rho == 0: rho = float(mat.get('Rho_kg/mm3', 0)) * 1e9
                 
-                rho = float(mat.get('Rho_kg/mm3', 0))
-                if rho == 0 and 'Rho_kg/m3' in mat: rho = float(mat['Rho_kg/m3']) * 1e-9
+                # Berat per mm (N/mm)
+                w_dead = float(item['raw']['section'].get('Area_mm2', 0)) * (rho * 1e-9) * G_ACC
                 
-                A_curr = float(sec.get('Area_mm2', 0))
-                w_grav = rho * A_curr * G_ACC 
-                
-                if w_grav > 1e-12:
-                    n_i, n_j = item['nodes']
-                    xi, yi, zi = node_coords[n_i]
-                    xj, yj, zj = node_coords[n_j]
-                    L = math.sqrt((xj-xi)**2 + (yj-yi)**2 + (zj-zi)**2)
-                    F_node = (w_grav * L) / 2.0
-                    ops.load(n_i, 0.0, 0.0, -F_node, 0.0, 0.0, 0.0)
-                    ops.load(n_j, 0.0, 0.0, -F_node, 0.0, 0.0, 0.0)
+                if item['is_vertical']:
+                    ops.eleLoad('-ele', item['id'], '-type', '-beamUniform', 0.0, 0.0, -w_dead)
+                else:
+                    ops.eleLoad('-ele', item['id'], '-type', '-beamUniform', 0.0, -w_dead, 0.0)
 
-        # Live Load
+        # B. FLOOR PRESSURE (LIVE LOAD)
         if case_type in ['LL', 'COMB']:
-            for item in final_elements:
-                P = item.get('load_val', 0.0)
-                nid = item.get('load_node')
-                if P > 0 and nid is not None:
-                    ops.load(nid, 0.0, 0.0, -P, 0.0, 0.0, 0.0)
+            for item in processed_elements:
+                # Hanya Balok Horizontal yang menerima beban lantai
+                if not item['is_vertical']: 
+                    # Parse element-specific loads
+                    load_params = apply_element_loads(item['raw'], case_type)
+                    
+                    if load_params['has_loads']:
+                        # ---- METODE 1: Gunakan Data Loads dari JSON ----
+                        eid = item['id']
+                        L = item['length']
+                        total_applied_load = 0.0
+                        
+                        # Apply Point Loads (Convert to equivalent uniform for Timoshenko)
+                        for (loc_ratio, force, direction) in load_params['point_loads']:
+                            if direction == 'Y':
+                                # ElasticTimoshenkoBeam tidak support beamPoint
+                                # Konversi point load ke ekuivalen uniform distributed load
+                                # w_equiv = P / L (distribusi merata ekuivalen)
+                                w_equiv = force / L
+                                ops.eleLoad('-ele', eid, '-type', '-beamUniform', 
+                                           0.0, -w_equiv, 0.0)
+                                total_applied_load += force
+                        
+                        # Apply Distributed Loads
+                        for (w_start, w_end, direction) in load_params['distributed_loads']:
+                            if direction == 'Y':
+                                # Distributed load sepanjang balok
+                                if w_start == w_end:
+                                    # Uniform load
+                                    ops.eleLoad('-ele', eid, '-type', '-beamUniform', 
+                                               0.0, -w_start, 0.0)
+                                    total_applied_load += w_start * L
+                                else:
+                                    # Linearly varying load (triangle, trapezoid)
+                                    # NOTE: ElasticTimoshenkoBeam DOES NOT support -beamLinear
+                                    # Fallback: Use averaged uniform load
+                                    w_avg = (w_start + w_end) / 2.0
+                                    ops.eleLoad('-ele', eid, '-type', '-beamUniform', 
+                                               0.0, -w_avg, 0.0)
+                                    total_applied_load += w_avg * L
+                        
+                        # Store load info untuk reporting
+                        item['applied_load'] = f"{load_params['load_summary']} (Total: {total_applied_load/1000:.1f}kN)"
+                    else:
+                        # ---- METODE 2: Fallback ke Global Pressure (Original) ----
+                        L = item['length']
+                        # Ekuivalen Beban Merata dari Amplop 2 Arah
+                        w_live = (FLOOR_PRESSURE * L) / 4.0
+                        
+                        if w_live > 0:
+                            ops.eleLoad('-ele', item['id'], '-type', '-beamUniform', 
+                                       0.0, -w_live, 0.0)
+                        
+                        item['applied_load'] = f"Global Pressure: {w_live:.2f}N/mm"
 
-        # --- 5. ANALYZE ---
+        # --- SOLVE ---
         ops.system('BandGeneral') 
         ops.numberer('RCM')
         ops.constraints('Transformation') 
@@ -222,115 +308,163 @@ def run_load_case(elements_list, case_type):
         status = ops.analyze(1)
         res["status"] = "Success" if status == 0 else "Failed"
         
-        # --- 6. EXTRACT RESULTS (ONLY IF SUCCESS) ---
+        # --- EXTRACT RESULTS ---
         if status == 0:
             ops.reactions()
             total_rz = 0.0
             
-            # Update Nodes Data
+            # Nodes
             for nid in node_coords:
-                d = ops.nodeDisp(nid)
-                res["nodes"][nid]["disp"] = [round(v, 4) for v in d]
-                
                 if nid in fixed_nodes:
                     reac = ops.nodeReaction(nid)
-                    total_rz += reac[2]
-                    res["nodes"][nid]["reaction"] = [round(val, 2) for val in reac]
-
+                    r_clean = [round(v, 2) for v in reac]
+                    res["nodes"][nid]["reaction"] = r_clean
+                    total_rz += r_clean[2]
+                
+                d = ops.nodeDisp(nid)
+                res["nodes"][nid]["disp"] = [round(v, 4) for v in d]
+            
             res["summary"]["total_reaction_z"] = round(total_rz, 2)
-
-            # Process Elements (Scanning Segments)
-            for original_id, segments in element_segments_map.items():
+            
+            #Elements
+            for item in processed_elements:
+                eid = item['id']
                 try:
-                    max_M_abs = 0.0
+                    f = ops.eleForce(eid)
                     
-                    # Force data ujung
-                    f_start = ops.eleForce(segments[0]) 
-                    f_end = ops.eleForce(segments[-1])
+                    if item['is_vertical']:
+                        # Kolom
+                        axial = f[0]
+                        shear = max(abs(f[1]), abs(f[2]))
+                        # Momen kolom: f[3]=Mx-i, f[4]=My-i, f[5]=Mz-i
+                        # Ambil momen dominan (biasanya My atau Mz)
+                        mi = max(abs(f[3]), abs(f[4]), abs(f[5]))
+                        mj = max(abs(f[9]), abs(f[10]), abs(f[11]))
+                        # Keep sign from dominant component
+                        if abs(f[4]) >= abs(f[3]) and abs(f[4]) >= abs(f[5]):
+                            mi = f[4]
+                            mj = f[10]
+                        elif abs(f[5]) >= abs(f[3]):
+                            mi = f[5]
+                            mj = f[11]
+                        else:
+                            mi = f[3]
+                            mj = f[9]
+                    else:
+                        # Balok
+                        axial = f[0]
+                        shear = max(abs(f[1]), abs(f[2]))  # Geser (bisa Y atau Z)
+                        # Momen balok: f[3]=Mx-i, f[4]=My-i, f[5]=Mz-i
+                        # Balok arah X: lentur dominan di My atau Mz  
+                        # Balok arah Y: lentur dominan di Mx atau Mz
+                        mi = max(abs(f[3]), abs(f[4]), abs(f[5]))
+                        mj = max(abs(f[9]), abs(f[10]), abs(f[11]))
+                        # Keep sign from dominant component
+                        if abs(f[3]) >= abs(f[4]) and abs(f[3]) >= abs(f[5]):
+                            mi = f[3]
+                            mj = f[9]
+                        elif abs(f[4]) >= abs(f[5]):
+                            mi = f[4]
+                            mj = f[10]
+                        else:
+                            mi = f[5]
+                            mj = f[11]
                     
-                    # Scanning Max Moment
-                    for seg_id in segments:
-                        forces = ops.eleForce(seg_id)
-                        # Check My & Mz
-                        for idx in [4, 5, 10, 11]:
-                            if abs(forces[idx]) > max_M_abs: 
-                                max_M_abs = abs(forces[idx])
+                    m_max = max(abs(mi), abs(mj))
 
-                    res["elements"][original_id] = {
-                        "axial": round(f_start[0], 2),
-                        "shear_v": round(f_start[1], 2),
-                        "moment_i": round(f_start[5], 2) if abs(f_start[5]) > abs(f_start[4]) else round(f_start[4], 2),
-                        "moment_j": round(f_end[11], 2) if abs(f_end[11]) > abs(f_end[10]) else round(f_end[10], 2),
-                        "moment_max": round(max_M_abs, 2)
+                    res["elements"][eid] = {
+                        "axial": round(axial, 2),
+                        "shear": round(shear, 2),
+                        "moment_i": round(mi, 2),
+                        "moment_j": round(mj, 2),
+                        "moment_max_abs": round(m_max, 2),
+                        "element_type": "Column" if item['is_vertical'] else "Beam",
+                        "applied_load": item.get('applied_load', 'N/A')
                     }
                 except:
-                    res["elements"][original_id] = {"error": "NoData"}
-        
-    except Exception as e:
-        print(f"[ERROR] Case {case_type}: {str(e)}")
-        res["status"] = "Error"
-        res["error_msg"] = str(e)
+                    res["elements"][eid] = {"error": "N/A"}
 
+    except Exception as e:
+        print(f"[ERROR] Case {case_type}: {e}")
+        res["status"] = "Error"
+    
     return res
 
+# ============================================================================
+# 3. PRINT REPORT
+# ============================================================================
 def print_styled_report(final_output):
-    print("\n" + "="*80)
-    print(f"{'LAPORAN ANALISIS STRUKTUR':^80}")
-    print("="*80)
+    print("\n" + "="*85)
+    print(f"{'LAPORAN ANALISIS STRUKTUR (SAP2000 VALIDATED)':^85}")
+    print("="*85)
 
-    case_map = {
+    scenarios = {
         "SelfWeight": "BEBAN MATI (SW)",
-        "LiveLoad": "BEBAN HIDUP (LL)",
+        "LiveLoad": "BEBAN HIDUP (LL - Floor Pressure)",
         "Combination": "KOMBINASI (1.0D + 1.0L)"
     }
 
-    for key, title in case_map.items():
+    for key, title in scenarios.items():
         data = final_output.get(key)
         if not data: continue
         
         print(f"\n[{title}]")
-        if data['status'] != 'Success':
-            print(f"  Status: {data['status']} - {data.get('error_msg', '')}")
-            continue
-
-        print(f"  Total Reaksi Vertikal: {data['summary']['total_reaction_z']} N")
-        print("-" * 80)
-        print(f"  {'Elem ID':<10} | {'Axial (N)':<12} | {'Momen I':<12} | {'Momen J':<12} | {'MAX MOMEN':<12}")
-        print("-" * 80)
+        print(f"  Status Analisis : {data['status']}")
+        if data['status'] == 'Success':
+            print(f"  Total Reaksi Z+ : {data['summary']['total_reaction_z']} N")
+        
+        print("-" * 85)
+        print(f"  {'ID Elemen':<10} | {'Axial (N)':<12} | {'Geser (N)':<12} | {'Momen I':<12} | {'Momen J':<12}")
+        print("-" * 85)
+        
+        valid_ids = sorted([k for k in data['elements'].keys() if isinstance(data['elements'][k], dict) and 'error' not in data['elements'][k]])
         
         count = 0
-        sorted_keys = sorted([k for k in data['elements'].keys() if isinstance(data['elements'][k], dict)])
-        for eid in sorted_keys:
-            vals = data['elements'][eid]
-            if 'error' not in vals:
-                print(f"  {str(eid):<10} | {vals['axial']:<12} | {vals['moment_i']:<12} | {vals['moment_j']:<12} | {vals['moment_max']:<12}")
-            else:
-                print(f"  {str(eid):<10} | ERROR")
-            
+        for eid in valid_ids:
+            v = data['elements'][eid]
+            print(f"  {str(eid):<10} | {v['axial']:<12} | {v['shear']:<12} | {v['moment_i']:<12} | {v['moment_j']:<12}")
             count += 1
-            if count >= 10: 
+            if count >= 15: 
                 print("  ... (sisa elemen disembunyikan)")
                 break
-    print("\n" + "="*80)
+        
+        # Show Load Summary for LL and COMB cases
+        if key in ['LiveLoad', 'Combination']:
+            print(f"\n  {'Load Summary (First 10 Beams)':^85}")
+            print("-" * 85)
+            print(f"  {'ID':<10} | {'Type':<8} | {'Applied Load':<62}")
+            print("-" * 85)
+            load_count = 0
+            for eid in valid_ids:
+                v = data['elements'][eid]
+                if v.get('element_type') == 'Beam' and v.get('applied_load') != 'N/A':
+                    print(f"  {str(eid):<10} | {v.get('element_type', 'N/A'):<8} | {v.get('applied_load', 'N/A'):<62}")
+                    load_count += 1
+                    if load_count >= 10:
+                        break
+                
+    print("\n" + "="*85)
+    print("[SELESAI]")
 
+# ============================================================================
+# 4. MAIN DRIVER
+# ============================================================================
 def run_analysis(input_path, output_path):
-    root_data = get_model_data(input_path)
-    if not root_data: 
-        # Tulis JSON kosong valid agar reader tidak error fatal
-        with open(output_path, 'w') as f: json.dump({"error": "File Read Error"}, f)
-        return
+    data = get_model_data(input_path)
+    if not data: return
 
-    elements_list = root_data.get('model_elements', [])
-    
+    # Jalankan 3 Skenario
     results = {
-        "SelfWeight": run_load_case(elements_list, 'SW'),
-        "LiveLoad": run_load_case(elements_list, 'LL'),
-        "Combination": run_load_case(elements_list, 'COMB')
+        "SelfWeight": run_load_case(data, 'SW'),
+        "LiveLoad": run_load_case(data, 'LL'),
+        "Combination": run_load_case(data, 'COMB')
     }
 
+    # Simpan JSON Output
     with open(output_path, 'w') as f:
         json.dump(results, f, indent=4)
 
+    # Tampilkan Report
     print_styled_report(results)
 
 if __name__ == "__main__":
