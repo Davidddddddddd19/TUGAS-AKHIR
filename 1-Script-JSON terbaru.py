@@ -1188,8 +1188,8 @@ if json_success:
                                             elem_name = "{} : {}".format(el.Symbol.FamilyName, el.Name)
                                             
                                             axial = val.get('axial', 0.0)
-                                            m_i = val.get('moment_z_i', 0.0)
-                                            m_j = val.get('moment_z_j', 0.0)
+                                            m_i = val.get('moment_i', 0.0)  # FIX: was moment_z_i
+                                            m_j = val.get('moment_j', 0.0)  # FIX: was moment_z_j
                                             
                                             # Cari Momen Maksimum absolut di elemen ini
                                             max_m_elem = max(abs(m_i), abs(m_j)) 
