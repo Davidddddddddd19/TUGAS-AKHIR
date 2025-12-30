@@ -402,24 +402,56 @@ def run_load_case(data, case_type):
                     if not subs: 
                          # Default for columns or unsubdivided
                          f = ops.eleForce(eid)
+                         # Mapping Force Vector to Logical Names
+                         # f[0]=Axial, f[1]=Vy, f[2]=Vz, f[3]=T, f[4]=My, f[5]=Mz
+                         
+                         m_major_i = f[5]
+                         m_minor_i = f[4]
+                         m_major_j = f[11]
+                         m_minor_j = f[10]
+                         
                          if item['is_vertical']:
-                             axial = f[0]
-                             shear = max(abs(f[1]), abs(f[2]))
-                             mi = f[4]
-                             mj = f[10]
-                         else:
-                             axial = f[0]
-                             shear = max(abs(f[1]), abs(f[2]))
-                             mi = f[4]
-                             mj = f[10]
+                             # USER REQUEST: Column Axial should be Reaction value
+                             # Direct Query to OpenSees Engine (Bypass Dictionary Lookups)
+                             reac_val = 0.0
                              
-                         m_max = max(abs(mi), abs(mj))
+                             # Check Node I (Bottom/Top)
+                             try:
+                                 r_vec_i = ops.nodeReaction(item['nodes'][0])
+                                 if abs(r_vec_i[2]) > 0.1: # Check Fz
+                                     reac_val = abs(r_vec_i[2])
+                             except:
+                                 pass
+                                 
+                             # Check Node J (Bottom/Top) if not found
+                             if reac_val < 0.1:
+                                 try:
+                                     r_vec_j = ops.nodeReaction(item['nodes'][1])
+                                     if abs(r_vec_j[2]) > 0.1:
+                                         reac_val = abs(r_vec_j[2])
+                                 except:
+                                     pass
+
+                             if reac_val > 0.1:
+                                 axial = reac_val
+                             else:
+                                 axial = f[0]
+                             
+                             shear = max(abs(f[1]), abs(f[2]))
+                         else:
+                             # USER REQUEST: Beam Axial = 0
+                             axial = 0.0
+                             shear = max(abs(f[1]), abs(f[2]))
+                             
+                         # Calculate Max Moment
                          res["elements"][eid] = {
                             "axial": round(axial, 2),
                             "shear": round(shear, 2),
-                            "moment_i": round(mi, 2),
-                            "moment_j": round(mj, 2),
-                            "moment_max_abs": round(m_max, 2),
+                            # Store both major/minor for clarity, printed script will pick them up
+                            "moment_major": round(max(abs(m_major_i), abs(m_major_j)), 2),
+                            "moment_minor": round(max(abs(m_minor_i), abs(m_minor_j)), 2),
+                            "moment_i": round(m_minor_i, 2), # Legacy fallback
+                            "moment_j": round(m_minor_j, 2), # Legacy fallback
                             "element_type": "Column" if item['is_vertical'] else "Beam",
                             "applied_load": item.get('applied_load', '')
                          }
@@ -431,26 +463,46 @@ def run_load_case(data, case_type):
                         f_first = ops.eleForce(first_eid)
                         f_last = ops.eleForce(last_eid)
                         
-                        if item['is_vertical']:
-                            axial = f_first[0]
-                            shear = max(abs(f_first[1]), abs(f_first[2]))
-                            mi = f_first[4]
-                            mj = f_last[10]
-                        else:
-                            # Beam (Chain)
-                            axial = f_first[0]
-                            shear = max(abs(f_first[1]), abs(f_first[2]))
-                            mi = f_first[4]
-                            mj = f_last[10]
+                        # Mapping Force Vector to Logical Names
+                        # f_first[5] is Mz (Major), f_first[4] is My (Minor)
+                        m_major_i = f_first[5]
+                        m_minor_i = f_first[4]
+                        m_major_j = f_last[11]
+                        m_minor_j = f_last[10]
                         
-                        m_max = max(abs(mi), abs(mj))
+                        if item['is_vertical']:
+                            # For Subdivided Columns (Unexpected but possible)
+                            # Apply Direct Reaction Query override
+                            reac_val = 0.0
+                            try:
+                                r_vec_i = ops.nodeReaction(item['nodes'][0])
+                                if abs(r_vec_i[2]) > 0.1: reac_val = abs(r_vec_i[2])
+                            except: pass
+                            
+                            if reac_val < 0.1:
+                                try:
+                                    r_vec_j = ops.nodeReaction(item['nodes'][1])
+                                    if abs(r_vec_j[2]) > 0.1: reac_val = abs(r_vec_j[2])
+                                except: pass
+                                
+                            if reac_val > 0.1:
+                                axial = reac_val
+                            else:
+                                axial = f_first[0]
+                                
+                            shear = max(abs(f_first[1]), abs(f_first[2]))
+                        else:
+                            # USER REQUEST: Subdivided Beam Axial = 0
+                            axial = 0.0
+                            shear = max(abs(f_first[1]), abs(f_first[2]))
                         
                         res["elements"][eid] = {
                             "axial": round(axial, 2),
                             "shear": round(shear, 2),
-                            "moment_i": round(mi, 2),
-                            "moment_j": round(mj, 2),
-                            "moment_max_abs": round(m_max, 2),
+                            "moment_major": round(max(abs(m_major_i), abs(m_major_j)), 2),
+                            "moment_minor": round(max(abs(m_minor_i), abs(m_minor_j)), 2),
+                            "moment_i": round(m_minor_i, 2), # Legacy fallback
+                            "moment_j": round(m_minor_j, 2), # Legacy fallback
                             "element_type": "Column" if item['is_vertical'] else "Beam",
                             "applied_load": item.get('applied_load', '')
                         }
