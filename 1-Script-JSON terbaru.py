@@ -601,6 +601,12 @@ try:
                 p2 = get_pt(i, j, lt.Elevation)
                 
                 c = doc.Create.NewFamilyInstance(Line.CreateBound(p1, p2), col_sym, lb, StructuralType.Column)
+                
+                # USER REQUEST: Rotate Column so Web aligns with X-Axis (Match SAP2000)
+                # Default Revit Column Web is along Y. Rotate 90 deg.
+                axis = Line.CreateBound(p1, p1 + XYZ(0,0,10))
+                ElementTransformUtils.RotateElement(doc, c.Id, axis, math.pi/2.0)
+                
                 cols_to_process.append({'el':c, 'lb':lb, 'lt':lt})
                 created_ids.append(c.Id)
 
@@ -1124,13 +1130,19 @@ if json_success:
                                 # ===========================================================
                                 data_reac = []
                                 if 'nodes' in results:
+
                                     for nid, val in results['nodes'].items():
                                         reac = val.get('reaction')
                                         if reac:
+                                            # USER REQUEST: Order Fx - Fy - Fz
+                                            # Analysis.json stores [Fy, Fx, Fz...] due to previous swap
+                                            # So we map: reac[1]->Fx, reac[0]->Fy
+                                            # USER REQUEST: Swap Mx, My
+                                            # Map: reac[4]->Mx, reac[3]->My
                                             data_reac.append([
                                                 nid, 
-                                                round(reac[0], 2), round(reac[1], 2), round(reac[2], 2), 
-                                                round(reac[3], 2), round(reac[4], 2), round(reac[5], 2)
+                                                round(reac[1], 2), round(reac[0], 2), round(reac[2], 2), 
+                                                round(reac[4], 2), round(reac[3], 2), round(reac[5], 2)
                                             ])
                                     
                                     if data_reac:
