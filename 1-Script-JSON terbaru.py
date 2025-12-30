@@ -1150,7 +1150,7 @@ if json_success:
                                         print_center_table(
                                             output=out,
                                             data=data_reac,
-                                            columns=["Node ID", "Fx (N)", "Fy (N)", "Fz (N)", "Mx", "My", "Mz"],
+                                            columns=["Node ID", "Fx (N)", "Fy (N)", "Fz (N)", "Mx (Nmm)", "My (Nmm)", "Mz (Nmm)"],
                                             title="Reaksi Tumpuan ({})".format(case_key)
                                         )
                                     else:
