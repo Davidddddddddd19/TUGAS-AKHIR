@@ -21,7 +21,7 @@ clr.AddReference('RevitAPIUI')
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Structure import StructuralType 
 from Autodesk.Revit.UI import TaskDialog
-from pyrevit import script, HOST_APP
+from pyrevit import script, HOST_APP, revit # Added revit import
 
 # Get active document (compatible with all pyRevit versions)
 doc = HOST_APP.doc
@@ -48,8 +48,7 @@ LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
 # 4. Parameter Rotasi Cross-Section (USER CONFIGURABLE)
 # Rotation dalam DERAJAT (akan dikonversi ke radian)
 # Rotasi positif = counter-clockwise dari atas
-COLUMN_ROTATION_DEG = 90.0  # Default: 90° untuk align web dengan X-axis
-BEAM_ROTATION_DEG   = 0.0   # Default: 0° (no rotation)
+COLUMN_ROTATION_DEG = 90  # Default: 90° untuk align web dengan X-axis  # Default: 0° (no rotation)
 
 SEARCH_TERMS_COL = ["Universal Column", "M_Concrete-Rectangular-Column", "UC", "Col"]
 SEARCH_TERMS_BEAM = ["Universal Beam", "M_Concrete-Rectangular-Beam", "UB", "Framing"]
@@ -426,75 +425,95 @@ def get_local_axes(element, doc):
         transform = None
         
         if cat_id == int(BuiltInCategory.OST_StructuralFraming):
-            # BEAM: Get from LocationCurve and Transform
-            loc = element.Location
-            if isinstance(loc, LocationCurve):
-                curve = loc.Curve
-                transform = element.GetTransform()
-                
-                # Element X-axis (along beam length)
-                p0 = curve.GetEndPoint(0)
-                p1 = curve.GetEndPoint(1)
-                x_vec = (p1 - p0).Normalize()
-                
-                local_axes["x_axis"] = [round(x_vec.X, 6), round(x_vec.Y, 6), round(x_vec.Z, 6)]
-                
-        elif cat_id == int(BuiltInCategory.OST_StructuralColumns):
-            # COLUMN: Get Transform
+            # BEAM: Simple extraction, No Rotation Calculation
             transform = element.GetTransform()
             
-            # For vertical column, X-axis is along height (vertical)
-            loc = element.Location
-            if isinstance(loc, LocationCurve):
-                curve = loc.Curve
-                p0 = curve.GetEndPoint(0)
-                p1 = curve.GetEndPoint(1)
-                x_vec = (p1 - p0).Normalize()
-                local_axes["x_axis"] = [round(x_vec.X, 6), round(x_vec.Y, 6), round(x_vec.Z, 6)]
-            elif isinstance(loc, LocationPoint):
-                # Vertical column default: X along Z (height)
-                local_axes["x_axis"] = [0.0, 0.0, 1.0]
-        
-        # Extract Y and Z axes from Transform (cross-section orientation)
-        if transform:
+            # BasisX is usually the beam axis
+            x_vec = transform.BasisX
             y_vec = transform.BasisY
             z_vec = transform.BasisZ
             
+            # Correction: Ensure X is along the Curve (Start->End)
+            # Sometimes BasisX might be -1*Axis if drawn backwards?
+            # Let's verify with LocationCurve if possible, but Transform is usually definitive for geometry.
+            
+            # Map directly to JSON
+            local_axes["x_axis"] = [round(x_vec.X, 6), round(x_vec.Y, 6), round(x_vec.Z, 6)]
             local_axes["y_axis"] = [round(y_vec.X, 6), round(y_vec.Y, 6), round(y_vec.Z, 6)]
             local_axes["z_axis"] = [round(z_vec.X, 6), round(z_vec.Y, 6), round(z_vec.Z, 6)]
             
-            # Determine web direction for I-sections
-            # Logic: For typical I-beam, depth (d) > width (b) -> web is in depth direction
+            # Rotation deg always 0 for beams per instruction
+            local_axes["rotation_angle_deg"] = 0.0
+                
+        elif cat_id == int(BuiltInCategory.OST_StructuralColumns):
+            # COLUMN:
+            transform = element.GetTransform()
+            
+            # BasisZ is usually Vertical (Member Axis)
+            # BasisX and BasisY are sectional axes
+            
+            # User defined convention previously: 
+            # Local X = BasisZ (Vertical)
+            # Local Y = BasisX
+            # Local Z = BasisY
+            
+            b_x = transform.BasisX
+            b_y = transform.BasisY
+            b_z = transform.BasisZ
+            
+            local_axes["x_axis"] = [round(b_z.X, 6), round(b_z.Y, 6), round(b_z.Z, 6)] # Local X along Vertical
+            local_axes["y_axis"] = [round(b_x.X, 6), round(b_x.Y, 6), round(b_x.Z, 6)] 
+            local_axes["z_axis"] = [round(b_y.X, 6), round(b_y.Y, 6), round(b_y.Z, 6)]
+
+            # Calculate Rotation Angle
+            # Angle of BasisX relative to Global X?
+            # atan2(y, x) gives angle from X-axis.
+            # If Rotation=0, BasisX=(1,0,0) -> atan2(0,1) = 0.
+            # Check projection on Global XY plane (since column is vertical)
+            raw_angle = math.degrees(math.atan2(b_x.Y, b_x.X))
+            local_axes["rotation_angle_deg"] = round(raw_angle, 1)
+
+        # 3. Determine Web Direction (Global Alignment)
+        # Default is "z_axis" (Local Z). We want "x_axis" or "y_axis" (Global).
+        
+        if cat_id == int(BuiltInCategory.OST_StructuralFraming):
+            # BEAM: Based on Beam Axis (Local X) Global Alignment
+            vec_x = local_axes["x_axis"]
+            if abs(vec_x[0]) > abs(vec_x[1]):
+                local_axes["web_direction"] = "x_axis"
+            else:
+                local_axes["web_direction"] = "y_axis"
+
+        elif cat_id == int(BuiltInCategory.OST_StructuralColumns):
+            # COLUMN: Based on Web Plane Global Alignment
+            # First, determine which Local Axis corresponds to the Web.
+            
+            web_is_local_z = True # Default for I-Sections (Depth > Width)
+            
+            # Check dimensions if available
             elem_type = doc.GetElement(element.GetTypeId())
             if elem_type:
-                # Try to get section dimensions
                 p_b = elem_type.get_Parameter(BuiltInParameter.STRUCTURAL_SECTION_WIDTH)
                 p_d = elem_type.get_Parameter(BuiltInParameter.STRUCTURAL_SECTION_DEPTH)
-                
                 if p_b and p_d and p_b.HasValue and p_d.HasValue:
-                    b_val = p_b.AsDouble()  # Width (flange width)
-                    d_val = p_d.AsDouble()  # Depth (web depth)
-                    
-                    # For typical I-section: d > b -> web is in depth direction (z_axis)
-                    # Otherwise, for wide flange sections -> web in y_axis
-                    if d_val > b_val:
-                        local_axes["web_direction"] = "z_axis"
-                    else:
-                        local_axes["web_direction"] = "y_axis"
-            
-            # Get rotation angle if available (Cross-section rotation parameter)
-            try:
-                p_rot = element.get_Parameter(BuiltInParameter.STRUCTURAL_BEND_DIR_ANGLE)
-                if p_rot and p_rot.HasValue:
-                    # Convert radians to degrees
-                    angle_rad = p_rot.AsDouble()
-                    local_axes["rotation_angle_deg"] = round(math.degrees(angle_rad), 2)
-            except:
-                pass
-                
+                    b_val = p_b.AsDouble()
+                    d_val = p_d.AsDouble()
+                    if d_val < b_val:
+                        web_is_local_z = False # Web is Local Y if Width > Depth
+
+            # Get the Web Vector in Global Coordinates
+            if web_is_local_z:
+                web_vector = local_axes["z_axis"]
+            else:
+                web_vector = local_axes["y_axis"]
+
+            # Map to Global Axis
+            if abs(web_vector[0]) > abs(web_vector[1]):
+                local_axes["web_direction"] = "x_axis"
+            else:
+                local_axes["web_direction"] = "y_axis"
+
     except Exception as e:
-        # Return default values if extraction fails
-        # This ensures backward compatibility
         pass
     
     return local_axes
@@ -544,233 +563,213 @@ def get_element_data(element, doc):
 # ===================================================
 cols_to_process, created_ids = [], []
 
-t = Transaction(doc, "Generate Model")
-t.Start()
-
 try:
-    # 1. CLEANUP (PHYSICAL & ANALYTICAL)
-    # =========================================================
-    # Menghapus elemen lama sebelum membuat yang baru.
-    # Target: Fisik (Balok/Kolom) DAN Analitik (Member/Node/dll).
-    
-    ids_to_del = List[ElementId]()
-    
-    # Daftar nama kategori yang ingin dihapus.
-    # Menggunakan string agar aman untuk berbagai versi Revit (2022/2023/2024).
-    categories_to_clean = [
-        # --- ELEMEN FISIK ---
-        "OST_StructuralColumns", 
-        "OST_StructuralFraming",
+    with revit.Transaction("Generate Model"):
+        # 1. CLEANUP (PHYSICAL & ANALYTICAL)
+        # =========================================================
+        # Menghapus elemen lama sebelum membuat yang baru.
+        # Target: Fisik (Balok/Kolom) DAN Analitik (Member/Node/dll).
         
-        # --- ELEMEN ANALITIK (Revit 2023+) ---
-        "OST_AnalyticalMember", 
-        "OST_AnalyticalPanel", 
-        "OST_AnalyticalNodes", 
-        "OST_AnalyticalLinks",
+        ids_to_del = List[ElementId]()
         
-        # --- ELEMEN ANALITIK (Legacy / Revit Lama) ---
-        "OST_AnalyticalBeams", 
-        "OST_AnalyticalColumns",
-        "OST_AnalyticalFloors", 
-        "OST_AnalyticalWalls"
-    ]
-
-    for cat_name in categories_to_clean:
-        # Cek apakah kategori tersebut ada di versi Revit ini?
-        if hasattr(BuiltInCategory, cat_name):
-            cat_enum = getattr(BuiltInCategory, cat_name)
+        # Daftar nama kategori yang ingin dihapus.
+        # Menggunakan string agar aman untuk berbagai versi Revit (2022/2023/2024).
+        categories_to_clean = [
+            # --- ELEMEN FISIK ---
+            "OST_StructuralColumns", 
+            "OST_StructuralFraming",
             
-            # Kumpulkan semua elemen dari kategori tersebut
-            col = FilteredElementCollector(doc).OfCategory(cat_enum).WhereElementIsNotElementType()
-            for e in col: 
-                ids_to_del.Add(e.Id)
-
-    # Eksekusi Penghapusan
-    if ids_to_del.Count > 0: 
-        doc.Delete(ids_to_del)
-    
-    doc.Regenerate()
-
-    # -------------------------------------------------------------
-    # 2. LEVEL REBUILD (METODE COPY - SAFE MODE)
-    # -------------------------------------------------------------
-    # Strategi: Sisakan 1 level terbawah sebagai Base, lalu Copy ke atas.
-    
-    # A. BERSIHKAN LEVEL LAMA
-    all_levels = FilteredElementCollector(doc).OfClass(Level).ToElements()
-    sorted_levels = sorted(all_levels, key=lambda x: x.Elevation)
-    
-    active_levels = []
-    
-    # Siapkan list C# untuk menampung ID yang akan dihapus
-    ids_to_delete = List[ElementId]() 
-    
-    if len(sorted_levels) > 0:
-        # Ambil Level paling bawah sebagai Base
-        base_level = sorted_levels[0]
-        
-        # Reset Base Level (Elevasi 0 & Nama "Level 1")
-        base_level.Elevation = 0.0
-        p_name = base_level.get_Parameter(BuiltInParameter.DATUM_TEXT)
-        if p_name: p_name.Set("Level 1")
-        
-        # Unpin jika terkunci
-        if base_level.Pinned: base_level.Pinned = False
+            # --- ELEMEN ANALITIK (Revit 2023+) ---
+            "OST_AnalyticalMember", 
+            "OST_AnalyticalPanel", 
+            "OST_AnalyticalNodes", 
+            "OST_AnalyticalLinks",
             
-        active_levels.append(base_level)
-        
-        # Masukkan level sisanya ke daftar hapus
-        for i in range(1, len(sorted_levels)):
-            ids_to_delete.Add(sorted_levels[i].Id)
-            
-        # Hapus Level sisa
-        if ids_to_delete.Count > 0:
-            doc.Delete(ids_to_delete)
-            doc.Regenerate()
-    else:
-        # Buat baru jika kosong (Safety)
-        base_level = Level.Create(doc, 0.0)
-        p_name = base_level.get_Parameter(BuiltInParameter.DATUM_TEXT)
-        if p_name: p_name.Set("Level 1")
-        active_levels.append(base_level)
+            # --- ELEMEN ANALITIK (Legacy / Revit Lama) ---
+            "OST_AnalyticalBeams", 
+            "OST_AnalyticalColumns",
+            "OST_AnalyticalFloors", 
+            "OST_AnalyticalWalls"
+        ]
 
-    # B. COPY LEVEL KE ATAS
-    height_ft = mm_to_ft(HEIGHT_MM)
-    
-    for k in range(1, N_STORY + 1):
-        # Hitung vector jarak vertikal (Z)
-        offset_z = k * height_ft
-        copy_vector = XYZ(0, 0, offset_z)
-        
-        # --- PERBAIKAN DI SINI (COLLECTION ERROR FIX) ---
-        # CopyElement mengembalikan ICollection (.NET), bukan List Python.
-        # Kita harus konversi ke list() agar bisa ambil index [0].
-        
-        copied_collection = ElementTransformUtils.CopyElement(doc, base_level.Id, copy_vector)
-        copied_ids_list = list(copied_collection) # Konversi aman
-        
-        if len(copied_ids_list) > 0:
-            new_lvl_id = copied_ids_list[0]
-            new_lvl = doc.GetElement(new_lvl_id)
-            
-            # Rename Level Baru
-            target_name = "Level " + str(k + 1)
-            p_name_new = new_lvl.get_Parameter(BuiltInParameter.DATUM_TEXT)
-            
-            if p_name_new:
-                try:
-                    p_name_new.Set(target_name)
-                except:
-                    # Fallback nama unik jika nama sudah dipakai
-                    p_name_new.Set(target_name + "_" + str(new_lvl.Id.IntegerValue))
-            
-            active_levels.append(new_lvl)
-
-    doc.Regenerate()
-
-    # 3. GEOMETRY BUILD (CENTERED AT ORIGIN 0,0,0)
-    col_sym = find_structural_family(BuiltInCategory.OST_StructuralColumns, SEARCH_TERMS_COL)
-    beam_sym = find_structural_family(BuiltInCategory.OST_StructuralFraming, SEARCH_TERMS_BEAM)
-    
-    if not col_sym.IsActive: col_sym.Activate()
-    if not beam_sym.IsActive: beam_sym.Activate()
-
-    # --- LOGIKA CENTER OF WORKSPACE ---
-    span_x_ft = mm_to_ft(SPAN_X_MM)
-    span_y_ft = mm_to_ft(SPAN_Y_MM)
-    
-    # Hitung total dimensi bangunan dalam feet
-    total_width_x = span_x_ft * BAY_X_COUNT
-    total_depth_y = span_y_ft * BAY_Y_COUNT
-    
-    # Tentukan offset agar (0,0) berada tepat di tengah bangunan
-    # Kita geser titik mulai ke kiri bawah (negatif)
-    start_x = -(total_width_x / 2.0)
-    start_y = -(total_depth_y / 2.0)
-    
-    # Fungsi helper untuk mendapatkan koordinat absolut berdasarkan grid index
-    def get_pt(i, j, elev):
-        x = start_x + (i * span_x_ft)
-        y = start_y + (j * span_y_ft)
-        return XYZ(x, y, elev)
-
-    for k in range(N_STORY):
-        lb, lt = active_levels[k], active_levels[k+1]
-        z_top = lt.Elevation
-        
-        # A. Create Columns (Grid Nodes)
-        for i in range(BAY_X_COUNT + 1):
-            for j in range(BAY_Y_COUNT + 1):
-                # Titik Bawah dan Atas Kolom (Sekarang sudah centered)
-                p1 = get_pt(i, j, lb.Elevation)
-                p2 = get_pt(i, j, lt.Elevation)
+        for cat_name in categories_to_clean:
+            # Cek apakah kategori tersebut ada di versi Revit ini?
+            if hasattr(BuiltInCategory, cat_name):
+                cat_enum = getattr(BuiltInCategory, cat_name)
                 
-                c = doc.Create.NewFamilyInstance(Line.CreateBound(p1, p2), col_sym, lb, StructuralType.Column)
+                # Kumpulkan semua elemen dari kategori tersebut
+                col = FilteredElementCollector(doc).OfCategory(cat_enum).WhereElementIsNotElementType()
+                for e in col: 
+                    ids_to_del.Add(e.Id)
+
+        # Eksekusi Penghapusan
+        if ids_to_del.Count > 0: 
+            doc.Delete(ids_to_del)
+        
+        doc.Regenerate()
+
+        # -------------------------------------------------------------
+        # 2. LEVEL REBUILD (METODE COPY - SAFE MODE)
+        # -------------------------------------------------------------
+        # Strategi: Sisakan 1 level terbawah sebagai Base, lalu Copy ke atas.
+        
+        # A. BERSIHKAN LEVEL LAMA
+        all_levels = FilteredElementCollector(doc).OfClass(Level).ToElements()
+        sorted_levels = sorted(all_levels, key=lambda x: x.Elevation)
+        
+        active_levels = []
+        
+        # Siapkan list C# untuk menampung ID yang akan dihapus
+        ids_to_delete = List[ElementId]() 
+        
+        if len(sorted_levels) > 0:
+            # Ambil Level paling bawah sebagai Base
+            base_level = sorted_levels[0]
+            
+            # Reset Base Level (Elevasi 0 & Nama "Level 1")
+            base_level.Elevation = 0.0
+            p_name = base_level.get_Parameter(BuiltInParameter.DATUM_TEXT)
+            if p_name: p_name.Set("Level 1")
+            
+            # Unpin jika terkunci
+            if base_level.Pinned: base_level.Pinned = False
                 
-                # USER CONFIGURABLE: Rotate Column cross-section
-                # Convert degrees to radians and apply rotation
-                col_rotation_rad = math.radians(COLUMN_ROTATION_DEG)
+            active_levels.append(base_level)
+            
+            # Masukkan level sisanya ke daftar hapus
+            for i in range(1, len(sorted_levels)):
+                ids_to_delete.Add(sorted_levels[i].Id)
                 
-                if abs(col_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
+            # Hapus Level sisa
+            if ids_to_delete.Count > 0:
+                doc.Delete(ids_to_delete)
+                doc.Regenerate()
+        else:
+            # Buat baru jika kosong (Safety)
+            base_level = Level.Create(doc, 0.0)
+            p_name = base_level.get_Parameter(BuiltInParameter.DATUM_TEXT)
+            if p_name: p_name.Set("Level 1")
+            active_levels.append(base_level)
+
+        # B. COPY LEVEL KE ATAS
+        height_ft = mm_to_ft(HEIGHT_MM)
+        
+        for k in range(1, N_STORY + 1):
+            # Hitung vector jarak vertikal (Z)
+            offset_z = k * height_ft
+            copy_vector = XYZ(0, 0, offset_z)
+            
+            # --- PERBAIKAN DI SINI (COLLECTION ERROR FIX) ---
+            # CopyElement mengembalikan ICollection (.NET), bukan List Python.
+            # Kita harus konversi ke list() agar bisa ambil index [0].
+            
+            copied_collection = ElementTransformUtils.CopyElement(doc, base_level.Id, copy_vector)
+            copied_ids_list = list(copied_collection) # Konversi aman
+            
+            if len(copied_ids_list) > 0:
+                new_lvl_id = copied_ids_list[0]
+                new_lvl = doc.GetElement(new_lvl_id)
+                
+                # Rename Level Baru
+                target_name = "Level " + str(k + 1)
+                p_name_new = new_lvl.get_Parameter(BuiltInParameter.DATUM_TEXT)
+                
+                if p_name_new:
                     try:
-                        # Create vertical axis for column rotation
-                        axis_end = XYZ(p1.X, p1.Y, p1.Z + 10)
-                        axis = Line.CreateBound(p1, axis_end)
-                        ElementTransformUtils.RotateElement(doc, c.Id, axis, col_rotation_rad)
-                    except Exception as e:
-                        print("Column rotation warning: " + str(e))
+                        p_name_new.Set(target_name)
+                    except:
+                        # Fallback nama unik jika nama sudah dipakai
+                        p_name_new.Set(target_name + "_" + str(new_lvl.Id.IntegerValue))
                 
-                cols_to_process.append({'el':c, 'lb':lb, 'lt':lt})
-                created_ids.append(c.Id)
+                active_levels.append(new_lvl)
 
-        # B. Create Beams
-        def mk_bm(p_start, p_end):
-            b = doc.Create.NewFamilyInstance(Line.CreateBound(p_start, p_end), beam_sym, lt, StructuralType.Beam)
-            set_beam_alignment_safe(b)
-            
-            # USER CONFIGURABLE: Rotate Beam cross-section
-            # Convert degrees to radians and apply rotation
-            beam_rotation_rad = math.radians(BEAM_ROTATION_DEG)
-            
-            if abs(beam_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
-                try:
-                    # Rotation axis is along beam length (local X-axis)
-                    # Simply use the beam's curve for axis
-                    ElementTransformUtils.RotateElement(doc, b.Id, 
-                                                       Line.CreateBound(p_start, p_end), 
-                                                       beam_rotation_rad)
-                except Exception as e:
-                    print("Beam rotation warning: " + str(e))
-            
-            return b.Id
-        
-        # Balok Arah X (Horizontal)
-        for j in range(BAY_Y_COUNT + 1):
-            for i in range(BAY_X_COUNT):
-                p_start = get_pt(i, j, z_top)
-                p_end   = get_pt(i+1, j, z_top)
-                created_ids.append(mk_bm(p_start, p_end))
-        
-        # Balok Arah Y (Vertikal)
-        for i in range(BAY_X_COUNT + 1):
-            for j in range(BAY_Y_COUNT):
-                p_start = get_pt(i, j, z_top)
-                p_end   = get_pt(i, j+1, z_top)
-                created_ids.append(mk_bm(p_start, p_end))
-    # 4. FIX CONSTRAINTS
-    doc.Regenerate()
-    for x in cols_to_process:
-        try:
-            x['el'].get_Parameter(BuiltInParameter.SLANTED_COLUMN_TYPE_PARAM).Set(0)
-            x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM).Set(x['lb'].Id)
-            x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM).Set(x['lt'].Id)
-            x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM).Set(0.0)
-            x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM).Set(0.0)
-        except: pass
+        doc.Regenerate()
 
-    t.Commit()
+        # 3. GEOMETRY BUILD (CENTERED AT ORIGIN 0,0,0)
+        col_sym = find_structural_family(BuiltInCategory.OST_StructuralColumns, SEARCH_TERMS_COL)
+        beam_sym = find_structural_family(BuiltInCategory.OST_StructuralFraming, SEARCH_TERMS_BEAM)
+        
+        if not col_sym.IsActive: col_sym.Activate()
+        if not beam_sym.IsActive: beam_sym.Activate()
+
+        # --- LOGIKA CENTER OF WORKSPACE ---
+        span_x_ft = mm_to_ft(SPAN_X_MM)
+        span_y_ft = mm_to_ft(SPAN_Y_MM)
+        
+        # Hitung total dimensi bangunan dalam feet
+        total_width_x = span_x_ft * BAY_X_COUNT
+        total_depth_y = span_y_ft * BAY_Y_COUNT
+        
+        # Tentukan offset agar (0,0) berada tepat di tengah bangunan
+        # Kita geser titik mulai ke kiri bawah (negatif)
+        start_x = -(total_width_x / 2.0)
+        start_y = -(total_depth_y / 2.0)
+        
+        # Fungsi helper untuk mendapatkan koordinat absolut berdasarkan grid index
+        def get_pt(i, j, elev):
+            x = start_x + (i * span_x_ft)
+            y = start_y + (j * span_y_ft)
+            return XYZ(x, y, elev)
+
+        for k in range(N_STORY):
+            lb, lt = active_levels[k], active_levels[k+1]
+            z_top = lt.Elevation
+            
+            # A. Create Columns (Grid Nodes)
+            for i in range(BAY_X_COUNT + 1):
+                for j in range(BAY_Y_COUNT + 1):
+                    # Titik Bawah dan Atas Kolom (Sekarang sudah centered)
+                    p1 = get_pt(i, j, lb.Elevation)
+                    p2 = get_pt(i, j, lt.Elevation)
+                    
+                    c = doc.Create.NewFamilyInstance(Line.CreateBound(p1, p2), col_sym, lb, StructuralType.Column)
+                    
+                    # USER CONFIGURABLE: Rotate Column cross-section
+                    # Convert degrees to radians and apply rotation
+                    col_rotation_rad = math.radians(COLUMN_ROTATION_DEG)
+                    
+                    if abs(col_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
+                        try:
+                            # Create vertical axis for column rotation
+                            axis_end = XYZ(p1.X, p1.Y, p1.Z + 10)
+                            axis = Line.CreateBound(p1, axis_end)
+                            ElementTransformUtils.RotateElement(doc, c.Id, axis, col_rotation_rad)
+                        except Exception as e:
+                            print("Column rotation warning: " + str(e))
+                    
+                    cols_to_process.append({'el':c, 'lb':lb, 'lt':lt})
+                    created_ids.append(c.Id)
+
+            # B. Create Beams
+            def mk_bm(p_start, p_end):
+                b = doc.Create.NewFamilyInstance(Line.CreateBound(p_start, p_end), beam_sym, lt, StructuralType.Beam)
+                set_beam_alignment_safe(b)
+                
+            # Balok Arah X (Horizontal)
+            for j in range(BAY_Y_COUNT + 1):
+                for i in range(BAY_X_COUNT):
+                    p_start = get_pt(i, j, z_top)
+                    p_end   = get_pt(i+1, j, z_top)
+                    created_ids.append(mk_bm(p_start, p_end))
+            
+            # Balok Arah Y (Vertikal)
+            for i in range(BAY_X_COUNT + 1):
+                for j in range(BAY_Y_COUNT):
+                    p_start = get_pt(i, j, z_top)
+                    p_end   = get_pt(i, j+1, z_top)
+                    created_ids.append(mk_bm(p_start, p_end))
+        # 4. FIX CONSTRAINTS
+        doc.Regenerate()
+        for x in cols_to_process:
+            try:
+                x['el'].get_Parameter(BuiltInParameter.SLANTED_COLUMN_TYPE_PARAM).Set(0)
+                x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM).Set(x['lb'].Id)
+                x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM).Set(x['lt'].Id)
+                x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM).Set(0.0)
+                x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM).Set(0.0)
+            except: pass
+
 except Exception as e:
-    if t.GetStatus() == TransactionStatus.Started: t.RollBack()
     TaskDialog.Show("Error", str(e))
 
 # ============================================================================
@@ -799,96 +798,91 @@ def get_element_curve(element):
     return None
 
 # --- TRANSAKSI UTAMA ---
-t_analytical = Transaction(doc, "Automation: Physical to Analytical")
-t_analytical.Start()
-
 try:
-    app_version = int(doc.Application.VersionNumber)
-    
-    # 1. SETUP FILTER
-    cat_list = List[BuiltInCategory]()
-    cat_list.Add(BuiltInCategory.OST_StructuralFraming)
-    cat_list.Add(BuiltInCategory.OST_StructuralColumns)
-    
-    filter_cat = ElementMulticategoryFilter(cat_list)
-    collector = FilteredElementCollector(doc).WhereElementIsNotElementType()
-    physical_elements = collector.WherePasses(filter_cat).ToElements()
+    with revit.Transaction("Automation: Physical to Analytical"):
+        app_version = int(doc.Application.VersionNumber)
+        
+        # 1. SETUP FILTER
+        cat_list = List[BuiltInCategory]()
+        cat_list.Add(BuiltInCategory.OST_StructuralFraming)
+        cat_list.Add(BuiltInCategory.OST_StructuralColumns)
+        
+        filter_cat = ElementMulticategoryFilter(cat_list)
+        collector = FilteredElementCollector(doc).WhereElementIsNotElementType()
+        physical_elements = collector.WherePasses(filter_cat).ToElements()
 
-    # Variabel penghitung
-    count_processed_successfully = 0 
+        # Variabel penghitung
+        count_processed_successfully = 0 
 
-    # ---------------------------------------------------------
-    # SKENARIO A: REVIT LAMA (< 2023)
-    # ---------------------------------------------------------
-    if app_version < 2023:
-        for el in physical_elements:
-            try:
-                p = el.get_Parameter(BuiltInParameter.STRUCTURAL_ANALYTICAL_MODEL)
-                if p and not p.IsReadOnly:
-                    # Baik sudah 1 (aktif) atau baru di-set ke 1, kita hitung sukses
-                    if p.AsInteger() == 0:
-                        p.Set(1)
-                    count_processed_successfully += 1
-            except:
-                pass
-    
-    # ---------------------------------------------------------
-    # SKENARIO B: REVIT BARU (2023+)
-    # ---------------------------------------------------------
-    else:
-        from Autodesk.Revit.DB.Structure import AnalyticalMember, AnalyticalToPhysicalAssociationManager, AnalyticalStructuralRole
-        assoc_manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
+        # ---------------------------------------------------------
+        # SKENARIO A: REVIT LAMA (< 2023)
+        # ---------------------------------------------------------
+        if app_version < 2023:
+            for el in physical_elements:
+                try:
+                    p = el.get_Parameter(BuiltInParameter.STRUCTURAL_ANALYTICAL_MODEL)
+                    if p and not p.IsReadOnly:
+                        # Baik sudah 1 (aktif) atau baru di-set ke 1, kita hitung sukses
+                        if p.AsInteger() == 0:
+                            p.Set(1)
+                        count_processed_successfully += 1
+                except:
+                    pass
+        
+        # ---------------------------------------------------------
+        # SKENARIO B: REVIT BARU (2023+)
+        # ---------------------------------------------------------
+        else:
+            from Autodesk.Revit.DB.Structure import AnalyticalMember, AnalyticalToPhysicalAssociationManager, AnalyticalStructuralRole
+            assoc_manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
 
-        for phys_el in physical_elements:
-            try:
-                # Cek Existing Association
-                associated_id = assoc_manager.GetAssociatedElementId(phys_el.Id)
-                
-                # Cek apakah analitiknya valid (Existing)
-                is_existing_valid = False
-                if associated_id != ElementId.InvalidElementId:
-                    if doc.GetElement(associated_id) is not None:
-                        is_existing_valid = True
-                
-                if is_existing_valid:
-                    # Jika sudah ada, kita hitung sebagai bagian dari total sukses
-                    count_processed_successfully += 1
-                    continue 
-
-                # Jika belum ada, Buat Baru (New)
-                curve = get_element_curve(phys_el)
-                
-                if curve:
-                    # Create
-                    new_am = AnalyticalMember.Create(doc, curve)
+            for phys_el in physical_elements:
+                try:
+                    # Cek Existing Association
+                    associated_id = assoc_manager.GetAssociatedElementId(phys_el.Id)
                     
-                    # Set Role
-                    cat_id = phys_el.Category.Id.IntegerValue
-                    if cat_id == int(BuiltInCategory.OST_StructuralColumns):
-                        new_am.StructuralRole = AnalyticalStructuralRole.StructuralRoleColumn
+                    # Cek apakah analitiknya valid (Existing)
+                    is_existing_valid = False
+                    if associated_id != ElementId.InvalidElementId:
+                        if doc.GetElement(associated_id) is not None:
+                            is_existing_valid = True
+                    
+                    if is_existing_valid:
+                        # Jika sudah ada, kita hitung sebagai bagian dari total sukses
+                        count_processed_successfully += 1
+                        continue 
+
+                    # Jika belum ada, Buat Baru (New)
+                    curve = get_element_curve(phys_el)
+                    
+                    if curve:
+                        # Create
+                        new_am = AnalyticalMember.Create(doc, curve)
+                        
+                        # Set Role
+                        cat_id = phys_el.Category.Id.IntegerValue
+                        if cat_id == int(BuiltInCategory.OST_StructuralColumns):
+                            new_am.StructuralRole = AnalyticalStructuralRole.StructuralRoleColumn
+                        else:
+                            new_am.StructuralRole = AnalyticalStructuralRole.StructuralRoleBeam
+
+                        # Associate
+                        assoc_manager.AddAssociation(new_am.Id, phys_el.Id)
+                        
+                        # Hitung sukses
+                        count_processed_successfully += 1
                     else:
-                        new_am.StructuralRole = AnalyticalStructuralRole.StructuralRoleBeam
+                        print("    Warning: Gagal ekstrak geometri ID {}".format(phys_el.Id))
+                
+                except Exception as e_inner:
+                    print("    Error pada ID {}: {}".format(phys_el.Id, str(e_inner)))
 
-                    # Associate
-                    assoc_manager.AddAssociation(new_am.Id, phys_el.Id)
-                    
-                    # Hitung sukses
-                    count_processed_successfully += 1
-                else:
-                    print("    Warning: Gagal ekstrak geometri ID {}".format(phys_el.Id))
-
-            except Exception as e_inner:
-                print("    Error pada ID {}: {}".format(phys_el.Id, str(e_inner)))
-
-    # --- FINAL REPORT (SESUAI REQUEST) ---
-    # Menampilkan total gabungan (Existing + Baru)
-    
-    print("✅ Total Model Analitik Aktif: {}".format(count_processed_successfully))
-
-    t_analytical.Commit()
+        # --- FINAL REPORT (SESUAI REQUEST) ---
+        # Menampilkan total gabungan (Existing + Baru)
+        
+        print("✅ Total Model Analitik Aktif: {}".format(count_processed_successfully))
 
 except Exception as e:
-    t_analytical.RollBack()
     print("❌ Error Fatal: " + str(e))
 
 # ============================================================================
@@ -897,86 +891,82 @@ except Exception as e:
 # Referensi User: view.AreAnalyticalModelCategoriesHidden
 # Target: Mengubah nilai properti tersebut menjadi False (agar TIDAK Hidden / Muncul)
 
-t_view = Transaction(doc, "Fix Analytical Visibility")
-t_view.Start()
-
 try:
-    view = doc.ActiveView
-    
-    # --- CEK VIEW TEMPLATE ---
-    if view.ViewTemplateId != ElementId.InvalidElementId:
-        print("⚠️ WARNING: View ini dikunci oleh View Template.")
+    with revit.Transaction("Fix Analytical Visibility"):
+        view = doc.ActiveView
+        
+        # --- CEK VIEW TEMPLATE ---
+        if view.ViewTemplateId != ElementId.InvalidElementId:
+            print("⚠️ WARNING: View ini dikunci oleh View Template.")
 
-    # -----------------------------------------------------------------------
-    # A. MASTER SWITCH (MENGGUNAKAN REFERENSI ANDA)
-    # -----------------------------------------------------------------------
-    # Kita cek apakah properti 'AreAnalyticalModelCategoriesHidden' tersedia
-    # Jika ya, kita set ke False (artinya: Jangan Sembunyikan = Tampilkan)
-    
-    master_switch_succcess = False
-    
-    try:
-        # Cek ketersediaan properti (Pythonic way untuk C# Property)
-        if hasattr(view, "AreAnalyticalModelCategoriesHidden"):
-            # Cek kondisi sekarang
-            if view.AreAnalyticalModelCategoriesHidden == True:
-                # ACTION: Set menjadi False untuk MENCENTANG checkbox
-                view.AreAnalyticalModelCategoriesHidden = False 
-                print(" -> [Master Switch] Berhasil dicentang (via AreAnalyticalModelCategoriesHidden).")
-            else:
-                print(" -> [Master Switch] Sudah aktif sebelumnya.")
-            master_switch_succcess = True
-    except Exception as e_prop:
-        print(" -> Info: Akses langsung properti gagal, mencoba metode Parameter fallback.")
+        # -----------------------------------------------------------------------
+        # A. MASTER SWITCH (MENGGUNAKAN REFERENSI ANDA)
+        # -----------------------------------------------------------------------
+        # Kita cek apakah properti 'AreAnalyticalModelCategoriesHidden' tersedia
+        # Jika ya, kita set ke False (artinya: Jangan Sembunyikan = Tampilkan)
+        
+        master_switch_succcess = False
+        
+        try:
+            # Cek ketersediaan properti (Pythonic way untuk C# Property)
+            if hasattr(view, "AreAnalyticalModelCategoriesHidden"):
+                # Cek kondisi sekarang
+                if view.AreAnalyticalModelCategoriesHidden == True:
+                    # ACTION: Set menjadi False untuk MENCENTANG checkbox
+                    view.AreAnalyticalModelCategoriesHidden = False 
+                    print(" -> [Master Switch] Berhasil dicentang (via AreAnalyticalModelCategoriesHidden).")
+                else:
+                    print(" -> [Master Switch] Sudah aktif sebelumnya.")
+                master_switch_succcess = True
+        except Exception as e_prop:
+            print(" -> Info: Akses langsung properti gagal, mencoba metode Parameter fallback.")
 
-    # -----------------------------------------------------------------------
-    # B. FALLBACK (JIKA PROPERTI DI ATAS GAGAL/VERSI LAMA)
-    # -----------------------------------------------------------------------
-    if not master_switch_succcess:
-        # Coba akses parameter manual (VG / VIEW_STRUCT)
-        param_names = ['VG_ANALYTICAL_MODEL_VISIBILITY', 'VIEW_STRUCT_ANALYTICAL_MODEL_VISIBILITY']
-        for p_name in param_names:
-            if hasattr(BuiltInParameter, p_name):
-                p_enum = getattr(BuiltInParameter, p_name)
-                p = view.get_Parameter(p_enum)
-                if p and not p.IsReadOnly and p.AsInteger() == 0:
-                    p.Set(1)
-                    print(" -> [Master Switch] Dicentang via Parameter {}.".format(p_name))
-                    break
+        # -----------------------------------------------------------------------
+        # B. FALLBACK (JIKA PROPERTI DI ATAS GAGAL/VERSI LAMA)
+        # -----------------------------------------------------------------------
+        if not master_switch_succcess:
+            # Coba akses parameter manual (VG / VIEW_STRUCT)
+            param_names = ['VG_ANALYTICAL_MODEL_VISIBILITY', 'VIEW_STRUCT_ANALYTICAL_MODEL_VISIBILITY']
+            for p_name in param_names:
+                if hasattr(BuiltInParameter, p_name):
+                    p_enum = getattr(BuiltInParameter, p_name)
+                    p = view.get_Parameter(p_enum)
+                    if p and not p.IsReadOnly and p.AsInteger() == 0:
+                        p.Set(1)
+                        print(" -> [Master Switch] Dicentang via Parameter {}.".format(p_name))
+                        break
 
-    # -----------------------------------------------------------------------
-    # C. UNHIDE SUB-KATEGORI (SAFE STRING LOOKUP)
-    # -----------------------------------------------------------------------
-    # Memastikan item di dalam tree (Member, Node, Panel) ikut dicentang
-    
-    target_cat_names = [
-        "OST_AnalyticalMember", "OST_AnalyticalPanel", # Revit 2023+
-        "OST_AnalyticalBeams", "OST_AnalyticalColumns", # Revit Lama
-        "OST_AnalyticalNodes", "OST_AnalyticalLinks",
-        "OST_AnalyticalFloors", "OST_AnalyticalWalls"
-    ]
+        # -----------------------------------------------------------------------
+        # C. UNHIDE SUB-KATEGORI (SAFE STRING LOOKUP)
+        # -----------------------------------------------------------------------
+        # Memastikan item di dalam tree (Member, Node, Panel) ikut dicentang
+        
+        target_cat_names = [
+            "OST_AnalyticalMember", "OST_AnalyticalPanel", # Revit 2023+
+            "OST_AnalyticalBeams", "OST_AnalyticalColumns", # Revit Lama
+            "OST_AnalyticalNodes", "OST_AnalyticalLinks",
+            "OST_AnalyticalFloors", "OST_AnalyticalWalls"
+        ]
 
-    count = 0
-    for name in target_cat_names:
-        if hasattr(BuiltInCategory, name):
-            cat_enum = getattr(BuiltInCategory, name)
-            try:
-                cat_id = ElementId(int(cat_enum))
-                if view.CanCategoryBeHidden(cat_id):
-                    if view.GetCategoryHidden(cat_id):
-                        view.SetCategoryHidden(cat_id, False) # False = Unhide
-                        count += 1
-            except:
-                pass
+        count = 0
+        for name in target_cat_names:
+            if hasattr(BuiltInCategory, name):
+                cat_enum = getattr(BuiltInCategory, name)
+                try:
+                    cat_id = ElementId(int(cat_enum))
+                    if view.CanCategoryBeHidden(cat_id):
+                        if view.GetCategoryHidden(cat_id):
+                            view.SetCategoryHidden(cat_id, False) # False = Unhide
+                            count += 1
+                except:
+                    pass
 
-    if count > 0:
-        print(" -> [Sub-Category] {} item dimunculkan.".format(count))
+        if count > 0:
+            print(" -> [Sub-Category] {} item dimunculkan.".format(count))
 
-    t_view.Commit()
-    print("✅ Pengaturan Tampilan Selesai.")
+        print("✅ Pengaturan Tampilan Selesai.")
 
 except Exception as e:
-    t_view.RollBack()
     print("❌ Gagal mengatur visibility: " + str(e))
 
 # ============================================================================
