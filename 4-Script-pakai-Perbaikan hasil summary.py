@@ -46,7 +46,6 @@ HEIGHT_MM   = 4000.0
 LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
 
 COLUMN_ROTATION_DEG = 0
-BEAM_ROTATION_DEG = 0
 
 SEARCH_TERMS_COL = ["Universal Column", "M_Concrete-Rectangular-Column", "UC", "Col"]
 SEARCH_TERMS_BEAM = ["Universal Beam", "M_Concrete-Rectangular-Beam", "UB", "Framing"]
