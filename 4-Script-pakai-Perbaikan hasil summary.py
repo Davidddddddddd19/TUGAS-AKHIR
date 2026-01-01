@@ -45,6 +45,9 @@ SPAN_Y_MM   = 4000.0
 HEIGHT_MM   = 4000.0     
 LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
 
+COLUMN_ROTATION_DEG = 0
+BEAM_ROTATION_DEG = 0
+
 SEARCH_TERMS_COL = ["Universal Column", "M_Concrete-Rectangular-Column", "UC", "Col"]
 SEARCH_TERMS_BEAM = ["Universal Beam", "M_Concrete-Rectangular-Beam", "UB", "Framing"]
 
@@ -397,6 +400,10 @@ def get_topology_ref(element, doc):
         
     return topo
 
+# ===================================================
+# LOCAL AXIS
+# ===================================================
+
 def get_local_axes(element, doc):
     """
     Extract local coordinate system from element Transform.
@@ -513,6 +520,9 @@ def get_local_axes(element, doc):
     
     return local_axes
 
+# ===================================================
+# ELEMENT DATA
+# ===================================================
 
 def get_element_data(element, doc):
     # 1. Format Nama Family & Type
@@ -721,7 +731,7 @@ try:
                     
                     # PHYSICAL ROTATION: Apply default 90° rotation to physical element only
                     # This does NOT change analytical local axes
-                    physical_rotation_rad = math.radians(90)
+                    physical_rotation_rad = math.radians(90+COLUMN_ROTATION_DEG)
                     
                     if abs(physical_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
                         try:
@@ -909,7 +919,7 @@ try:
                         
                         if is_column:
                             # Apply ANALYTICAL_COLUMN_ROTATION_DEG (user override only, no default)
-                            rotation_deg = 0
+                            rotation_deg = 0 + COLUMN_ROTATION_DEG
                         elif is_beam:
                             # Apply DEFAULT (-90°) + USER OVERRIDE for beams
                             rotation_deg = -90
