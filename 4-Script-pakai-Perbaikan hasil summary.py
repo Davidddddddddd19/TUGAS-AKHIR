@@ -45,11 +45,6 @@ SPAN_Y_MM   = 4000.0
 HEIGHT_MM   = 4000.0     
 LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
 
-# 4. Parameter Rotasi Cross-Section (USER CONFIGURABLE)
-# Rotation dalam DERAJAT (akan dikonversi ke radian)
-# Rotasi positif = counter-clockwise dari atas
-COLUMN_ROTATION_DEG = 0  # Default: 90° untuk align web dengan X-axis  # Default: 0° (no rotation)
-
 SEARCH_TERMS_COL = ["Universal Column", "M_Concrete-Rectangular-Column", "UC", "Col"]
 SEARCH_TERMS_BEAM = ["Universal Beam", "M_Concrete-Rectangular-Beam", "UB", "Framing"]
 
@@ -724,18 +719,18 @@ try:
                     
                     c = doc.Create.NewFamilyInstance(Line.CreateBound(p1, p2), col_sym, lb, StructuralType.Column)
                     
-                    # USER CONFIGURABLE: Rotate Column cross-section
-                    # Convert degrees to radians and apply rotation
-                    col_rotation_rad = math.radians(COLUMN_ROTATION_DEG)
+                    # PHYSICAL ROTATION: Apply default 90° rotation to physical element only
+                    # This does NOT change analytical local axes
+                    physical_rotation_rad = math.radians(90)
                     
-                    if abs(col_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
+                    if abs(physical_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
                         try:
                             # Create vertical axis for column rotation
                             axis_end = XYZ(p1.X, p1.Y, p1.Z + 10)
                             axis = Line.CreateBound(p1, axis_end)
-                            ElementTransformUtils.RotateElement(doc, c.Id, axis, col_rotation_rad)
+                            ElementTransformUtils.RotateElement(doc, c.Id, axis, physical_rotation_rad)
                         except Exception as e:
-                            print("Column rotation warning: " + str(e))
+                            print("Column physical rotation warning: " + str(e))
                     
                     cols_to_process.append({'el':c, 'lb':lb, 'lt':lt})
                     created_ids.append(c.Id)
@@ -880,7 +875,96 @@ try:
         # --- FINAL REPORT (SESUAI REQUEST) ---
         # Menampilkan total gabungan (Existing + Baru)
         
-        print("✅ Total Model Analitik Aktif: {}".format(count_processed_successfully))
+
+        # --- APPLY ANALYTICAL CROSS-SECTION ROTATION ---
+        # This must be done BEFORE extracting local axes
+        # Apply default rotations + user overrides to match SAP2000 conventions
+        
+        if app_version >= 2023:
+            try:
+                print("\\n🔄 Applying Analytical Cross-Section Rotations...")
+                
+                # Get all analytical members
+                analytical_members = FilteredElementCollector(doc).OfClass(AnalyticalMember).WhereElementIsNotElementType().ToElements()
+                
+                rotation_count = {"column": 0, "beam": 0}
+                
+                for am in analytical_members:
+                    try:
+                        # Get associated physical element to determine type
+                        phys_id = assoc_manager.GetAssociatedElementId(am.Id)
+                        if phys_id == ElementId.InvalidElementId:
+                            continue
+                        
+                        phys_el = doc.GetElement(phys_id)
+                        if phys_el is None:
+                            continue
+                        
+                        # Determine if Column or Beam
+                        cat_id = phys_el.Category.Id.IntegerValue
+                        is_column = (cat_id == int(BuiltInCategory.OST_StructuralColumns))
+                        is_beam = (cat_id == int(BuiltInCategory.OST_StructuralFraming))
+                        
+                        rotation_applied = False
+                        
+                        if is_column:
+                            # Apply ANALYTICAL_COLUMN_ROTATION_DEG (user override only, no default)
+                            rotation_deg = 0
+                        elif is_beam:
+                            # Apply DEFAULT (-90°) + USER OVERRIDE for beams
+                            rotation_deg = -90
+                        else:
+                            continue
+                        
+                        if abs(rotation_deg) > 0.001:
+                            # Convert degrees to radians (Revit internal unit)
+                            rotation_rad = math.radians(rotation_deg)
+                            
+                            # METHOD 1: Try using CrossSectionRotation property (if available)
+                            try:
+                                current_rotation = am.CrossSectionRotation
+                                am.CrossSectionRotation = current_rotation + rotation_rad
+                                rotation_applied = True
+                            except:
+                                pass
+                            
+                            # METHOD 2: Fallback to Parameter (ANALYTICAL_MEMBER_ROTATION)
+                            if not rotation_applied:
+                                try:
+                                    # Try accessing via BuiltInParameter
+                                    if hasattr(BuiltInParameter, 'ANALYTICAL_MEMBER_ROTATION'):
+                                        param = am.get_Parameter(BuiltInParameter.ANALYTICAL_MEMBER_ROTATION)
+                                    else:
+                                        # Fallback: search by parameter name
+                                        param = None
+                                        for p in am.Parameters:
+                                            if p.Definition.Name == "ANALYTICAL_MEMBER_ROTATION":
+                                                param = p
+                                                break
+                                    
+                                    if param and not param.IsReadOnly:
+                                        current_val = param.AsDouble()
+                                        param.Set(current_val + rotation_rad)
+                                        rotation_applied = True
+                                except:
+                                    pass
+                            
+                            if rotation_applied:
+                                if is_column:
+                                    rotation_count["column"] += 1
+                                elif is_beam:
+                                    rotation_count["beam"] += 1
+                                    
+                    except Exception as e_rot:
+                        print(f"  Warning: Could not rotate analytical member {am.Id}: {str(e_rot)}")
+                
+                print(f"  ✓ Rotated {rotation_count['column']} columns, {rotation_count['beam']} beams analytically.")
+                
+            except Exception as e_rotation:
+                print(f"⚠️ Analytical rotation error: {str(e_rotation)}")
+        else:
+            print("\\n⚠️ Analytical rotation skipped (Revit < 2023 doesn't have analytical rotation API)")
+
 
 except Exception as e:
     print("❌ Error Fatal: " + str(e))
