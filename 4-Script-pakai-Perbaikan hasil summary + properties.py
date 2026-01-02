@@ -188,14 +188,14 @@ def calculate_beam_distributed_load(start_node, end_node):
 def val2mpa(val):
     """Convert Revit Internal Pressure (PSF) to MPa"""
     if val is None: return 0.0
-    # 1 PSF = 47.88 Pa = 0.00004788 MPa
-    return round(val * 47.880258 / 1000000.0, 1)
+    # 1 Kg/fts2 = 1.0/304800.0 MPa
+    return round(val * 1.0 / 304800.0, 1)
 
 def val2kgmm3(val):
     """Convert Revit Internal Density (PCF) to kg/mm3"""
     if val is None: return 0.0
-    # 1 PCF = 16.018 kg/m3 = 1.6e-8 kg/mm3
-    return val * 16.018463 * 1.0e-9
+    # 1 Kg/ft3 = 0.000000035315 kg/mm3
+    return val * 0.000000001
 
 def val2invC(val):
     """Convert Revit Internal Thermal (1/F) to 1/C"""
@@ -207,85 +207,56 @@ def val2invC(val):
 # LOGIKA UTAMA (Sesuai Referensi + Parameter Ekstra)
 # ===================================================
 def get_material_data(element, doc):
-    # 1. Inisialisasi dengan nilai 0.0 dan Parameter LENGKAP
-    mat_data = {
-        "Name": "Default_Steel",
-        "Class": "Steel",
-        "E_MPa": 205000.0,
-        "G_MPa": 80000.0,
-        "Nu": 0.3,
-        "Fy_MPa": 275.0,
-        "Fu_MPa": 430.0,
-        "Rho_kg/mm3": 7.85e-6,
-        "Alpha_C": 1.2e-5
-    }
+    mat_data = {} # No default values, strictly lookup
 
     try:
-        # 2. Cari Material ID (Instance -> Type)
+        # 1. Get Material directly from Member Instance
         mat_id = None
         p_mat = element.get_Parameter(BuiltInParameter.STRUCTURAL_MATERIAL_PARAM)
-        if p_mat and p_mat.HasValue: mat_id = p_mat.AsElementId()
+        if p_mat and p_mat.HasValue: 
+            mat_id = p_mat.AsElementId()
         
+        # Fallback to Type
         if not mat_id or mat_id == ElementId.InvalidElementId:
             elem_type = doc.GetElement(element.GetTypeId())
             if elem_type:
                 p_mat_type = elem_type.get_Parameter(BuiltInParameter.STRUCTURAL_MATERIAL_PARAM)
-                if p_mat_type and p_mat_type.HasValue: mat_id = p_mat_type.AsElementId()
-
-        # 3. Ekstraksi Asset (Pendekatan Referensi)
+                if p_mat_type and p_mat_type.HasValue: 
+                    mat_id = p_mat_type.AsElementId()
+            
         if mat_id and mat_id != ElementId.InvalidElementId:
             mat_elem = doc.GetElement(mat_id)
             if mat_elem:
                 mat_data["Name"] = mat_elem.Name
                 
-                # Cek Class untuk data tambahan
-                if mat_elem.MaterialClass == MaterialClass.Concrete:
-                    mat_data["Class"] = "Concrete"
-                else:
-                    mat_data["Class"] = "Steel"
-
+                # 2. Get Structural Asset from Material
                 struc_asset_id = mat_elem.StructuralAssetId
                 if struc_asset_id != ElementId.InvalidElementId:
-                    pse = doc.GetElement(struc_asset_id) # PropertySetElement
+                    pse = doc.GetElement(struc_asset_id)
                     if pse:
-                        asset = pse.GetStructuralAsset()
-                        if asset:
-                            # --- A. MECHANICAL (E, G, Nu) ---
-                            # Menggunakan try/except untuk properti Vector (.X) vs Scalar
-                            try: e_val = asset.YoungModulus.X
-                            except: e_val = asset.YoungModulus
-                            
-                            try: g_val = asset.ShearModulus.X
-                            except: g_val = asset.ShearModulus
+                        # Helper for Safe Param Lookup
+                        def get_p(bip):
+                            p = pse.get_Parameter(bip)
+                            if p and p.HasValue: return p.AsDouble()
+                            return 0.0
 
-                            try: nu_val = asset.PoissonRatio.X
-                            except: nu_val = asset.PoissonRatio
-                            
-                            mat_data["E_MPa"] = val2mpa(e_val)
-                            mat_data["G_MPa"] = val2mpa(g_val)
-                            mat_data["Nu"]    = round(nu_val, 3)
-
-                            # --- B. DENSITY & THERMAL ---
-                            mat_data["Rho_kg/mm3"] = val2kgmm3(asset.Density)
-                            
-                            try: a_val = asset.ThermalExpansionCoefficient.X
-                            except: a_val = asset.ThermalExpansionCoefficient
-                            mat_data["Alpha_C"] = val2invC(a_val)
-
-                            # --- C. STRENGTH (Fy, Fu) ---
-                            # Try block khusus karena Beton tidak punya YieldStress
-                            try:
-                                mat_data["Fy_MPa"] = val2mpa(asset.MinimumYieldStress)
-                                mat_data["Fu_MPa"] = val2mpa(asset.MinimumTensileStrength)
-                            except:
-                                # Fallback untuk Beton (ambil fc' sebagai Fy)
-                                try:
-                                    mat_data["Fy_MPa"] = val2mpa(asset.ConcreteCompressionStrength)
-                                except: pass
+                        # PHY Params Lookup
+                        mat_data["E_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_YOUNG_MOD1))
+                        mat_data["G_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_SHEAR_MOD1))
+                        mat_data["Nu"]    = round(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_POISSON_MOD1), 3)
+                        
+                        mat_data["Rho_kg/mm3"] = val2kgmm3(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_UNIT_WEIGHT))
+                        mat_data["Alpha_C"] = val2invC(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_EXP_COEFF1))
+                        
+                        mat_data["Fy_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_MINIMUM_YIELD_STRESS))
+                        mat_data["Fu_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_MINIMUM_TENSILE_STRENGTH))
+                    else:
+                        print(f"Warning: PropertySetElement is None for asset {struc_asset_id}")
+                else:
+                     print(f"Warning: StructuralAssetId is Invalid for Material '{mat_elem.Name}'")
 
     except Exception as e:
-        # Optional: print error untuk debug
-        pass
+        print(f"Material Error: {str(e)}")
         
     return mat_data
 
@@ -297,6 +268,47 @@ def get_section_properties(element, doc):
     try:
         elem_type = doc.GetElement(element.GetTypeId())
         if not elem_type: return props
+
+        # Use StructuralSection API if available (Revit 2022+)
+        if hasattr(elem_type, "GetStructuralSection"):
+             section = elem_type.GetStructuralSection()
+             if section:
+                 # Geometric Properties
+                 try: props["d_mm"] = round(ft2mm(section.Height),2)
+                 except: pass
+                 try: props["b_mm"] = round(ft2mm(section.Width),2)
+                 except: pass
+                 try: props["tf_mm"] = round(ft2mm(section.FlangeThickness),2)
+                 except: pass
+                 try: props["tw_mm"] = round(ft2mm(section.WebThickness),2)
+                 except: pass
+                 try: props["Area_mm2"] = round(sqft2sqmm(section.SectionArea),2)
+                 except: pass
+                 
+                 # Analysis Properties
+                 try: props["Ix_mm4"] = round(ft42mm4(section.MomentOfInertiaStrongAxis),2)
+                 except: pass
+                 try: props["Iy_mm4"] = round(ft42mm4(section.MomentOfInertiaWeakAxis),2)
+                 except: pass
+                 
+                 # Zx = Plastic Modulus Strong Axis
+                 try: props["Zx_mm3"] = round(ft32mm3(section.PlasticModulusStrongAxis),2)
+                 except: pass
+                 
+                 # Sx = Elastic Modulus Strong Axis
+                 # Note: User list missed this, but standard engineering mapping requires Elastic for Sx.
+                 # If API has it, we use it. If not, fallback to BIP.
+                 try: props["Sx_mm3"] = round(ft32mm3(section.ElasticModulusStrongAxis),2)
+                 except: pass
+                 
+                 try: props["J_mm4"] = round(ft42mm4(section.TorsionalMomentOfInertia),2)
+                 except: pass
+                 
+                 # Torsional Modulus also available: section.TorsionalModulus
+                 
+                 return props
+
+        # FALLBACK: BuiltInParameters (legacy)
         def find_val(bip_list, str_list):
             for name in bip_list:
                 if hasattr(BuiltInParameter, name):
@@ -318,16 +330,11 @@ def get_section_properties(element, doc):
         props["Sx_mm3"]   = ft32mm3(find_val(["STRUCTURAL_SECTION_ELASTIC_MODULUS_STRONG_AXIS"], ["Sx"]))
         props["J_mm4"]    = ft42mm4(find_val(["STRUCTURAL_SECTION_J"], ["J"]))
 
-        d, b, tf, tw = props["d_mm"], props["b_mm"], props["tf_mm"], props["tw_mm"]
-        if d > 0 and b > 0:
-            hw = d - 2 * tf
-            if props["Area_mm2"] == 0: props["Area_mm2"] = (2 * b * tf) + (hw * tw)
-            if props["Ix_mm4"] == 0: props["Ix_mm4"] = (b*d**3 - (b-tw)*hw**3)/12.0
-            if props["Iy_mm4"] == 0: props["Iy_mm4"] = (2*tf*b**3 + hw*tw**3)/12.0
-            if props["J_mm4"] == 0: props["J_mm4"] = (1.0/3.0) * (2 * b * math.pow(tf, 3) + (d - tf) * math.pow(tw, 3))
-
         for k in props: 
-            if isinstance(props[k], float): props[k] = round(props[k], 2)
+            # "buat section properties memiliki angka bulat" -> Round to integer
+            if isinstance(props[k], float): 
+                props[k] = int(round(props[k]))
+                
     except: pass
     return props
 
@@ -405,114 +412,73 @@ def get_topology_ref(element, doc):
 
 def get_local_axes(element, doc):
     """
-    Extract local coordinate system from element Transform.
-    Returns local X, Y, Z axes in global coordinates with web direction info.
-    
-    Reference: element.GetTransform() provides BasisX, BasisY, BasisZ vectors
-    that define the element's local coordinate system in global space.
+    Extract/Construct local coordinate system.
+    For Columns: Uses COLUMN_ROTATION_DEG to manually construct rotated axes (Right-Hand Rule).
+    For Beams: Extract from element Transform.
     """
     local_axes = {
-        "x_axis": [1.0, 0.0, 0.0],  # Element axis (default along global X)
-        "y_axis": [0.0, 1.0, 0.0],  # Cross-section Y (default along global Y)
-        "z_axis": [0.0, 0.0, 1.0],  # Cross-section Z (default along global Z)
-        "web_direction": "z_axis",  # For I-sections: which axis web aligns to
-        "rotation_angle_deg": 0.0   # Rotation from default orientation
+        "x_axis": [1.0, 0.0, 0.0],
+        "y_axis": [0.0, 1.0, 0.0],
+        "z_axis": [0.0, 0.0, 1.0],
+        "rotation_angle_deg": 0.0
     }
     
     try:
         cat_id = element.Category.Id.IntegerValue
         
-        # Get Transform from element
-        transform = None
-        
         if cat_id == int(BuiltInCategory.OST_StructuralFraming):
-            # BEAM: Simple extraction, No Rotation Calculation
+            # BEAM: Extract from Transform
             transform = element.GetTransform()
             
-            # BasisX is usually the beam axis
-            x_vec = transform.BasisX
-            y_vec = transform.BasisY
-            z_vec = transform.BasisZ
+            # Basis vectors
+            local_axes["x_axis"] = [round(transform.BasisX.X, 6), round(transform.BasisX.Y, 6), round(transform.BasisX.Z, 6)]
+            local_axes["y_axis"] = [round(transform.BasisY.X, 6), round(transform.BasisY.Y, 6), round(transform.BasisY.Z, 6)]
+            local_axes["z_axis"] = [round(transform.BasisZ.X, 6), round(transform.BasisZ.Y, 6), round(transform.BasisZ.Z, 6)]
             
-            # Correction: Ensure X is along the Curve (Start->End)
-            # Sometimes BasisX might be -1*Axis if drawn backwards?
-            # Let's verify with LocationCurve if possible, but Transform is usually definitive for geometry.
-            
-            # Map directly to JSON
-            local_axes["x_axis"] = [round(x_vec.X, 6), round(x_vec.Y, 6), round(x_vec.Z, 6)]
-            local_axes["y_axis"] = [round(y_vec.X, 6), round(y_vec.Y, 6), round(y_vec.Z, 6)]
-            local_axes["z_axis"] = [round(z_vec.X, 6), round(z_vec.Y, 6), round(z_vec.Z, 6)]
-            
-            # Rotation deg always 0 for beams per instruction
-            local_axes["rotation_angle_deg"] = 0.0
-                
-        elif cat_id == int(BuiltInCategory.OST_StructuralColumns):
-            # COLUMN:
-            transform = element.GetTransform()
-            
-            # BasisZ is usually Vertical (Member Axis)
-            # BasisX and BasisY are sectional axes
-            
-            # User defined convention previously: 
-            # Local X = BasisZ (Vertical)
-            # Local Y = BasisX
-            # Local Z = BasisY
-            
-            b_x = transform.BasisX
-            b_y = transform.BasisY
-            b_z = transform.BasisZ
-            
-            local_axes["x_axis"] = [round(b_z.X, 6), round(b_z.Y, 6), round(b_z.Z, 6)] # Local X along Vertical
-            local_axes["y_axis"] = [round(b_x.X, 6), round(b_x.Y, 6), round(b_x.Z, 6)] 
-            local_axes["z_axis"] = [round(b_y.X, 6), round(b_y.Y, 6), round(b_y.Z, 6)]
-
-            # Calculate Rotation Angle
-            # Angle of BasisX relative to Global X?
-            # atan2(y, x) gives angle from X-axis.
-            # If Rotation=0, BasisX=(1,0,0) -> atan2(0,1) = 0.
-            # Check projection on Global XY plane (since column is vertical)
-            raw_angle = math.degrees(math.atan2(b_x.Y, b_x.X))
-            local_axes["rotation_angle_deg"] = round(raw_angle, 1)
-
-        # 3. Determine Web Direction (Global Alignment)
-        # Default is "z_axis" (Local Z). We want "x_axis" or "y_axis" (Global).
-        
-        if cat_id == int(BuiltInCategory.OST_StructuralFraming):
-            # BEAM: Based on Beam Axis (Local X) Global Alignment
+            # Determine Web Direction based on X-axis dominance
             vec_x = local_axes["x_axis"]
             if abs(vec_x[0]) > abs(vec_x[1]):
                 local_axes["web_direction"] = "x_axis"
             else:
                 local_axes["web_direction"] = "y_axis"
-
+                
         elif cat_id == int(BuiltInCategory.OST_StructuralColumns):
-            # COLUMN: Based on Web Plane Global Alignment
-            # First, determine which Local Axis corresponds to the Web.
+            # COLUMN: Manual Construction based on COLUMN_ROTATION_DEG
+            # Baseline (0 deg): Local X=Vert, Local Y=Global X, Local Z=Global Y
+            # Right-Hand Rule Rotation about Vertical Axis (Z)
             
-            web_is_local_z = True # Default for I-Sections (Depth > Width)
+            theta_rad = math.radians(COLUMN_ROTATION_DEG)
+            cos_t = math.cos(theta_rad)
+            sin_t = math.sin(theta_rad)
             
-            # Check dimensions if available
-            elem_type = doc.GetElement(element.GetTypeId())
-            if elem_type:
-                p_b = elem_type.get_Parameter(BuiltInParameter.STRUCTURAL_SECTION_WIDTH)
-                p_d = elem_type.get_Parameter(BuiltInParameter.STRUCTURAL_SECTION_DEPTH)
-                if p_b and p_d and p_b.HasValue and p_d.HasValue:
-                    b_val = p_b.AsDouble()
-                    d_val = p_d.AsDouble()
-                    if d_val < b_val:
-                        web_is_local_z = False # Web is Local Y if Width > Depth
-
-            # Get the Web Vector in Global Coordinates
-            if web_is_local_z:
-                web_vector = local_axes["z_axis"]
-            else:
-                web_vector = local_axes["y_axis"]
-
-            # Map to Global Axis
-            if abs(web_vector[0]) > abs(web_vector[1]):
-                local_axes["web_direction"] = "x_axis"
-            else:
-                local_axes["web_direction"] = "y_axis"
+            # Global X and Y rotated by theta around Global Z
+            # New Local Y (was Global X)
+            ly_x = cos_t
+            ly_y = sin_t
+            ly_z = 0.0
+            
+            # New Local Z (was Global Y)
+            # Standard 2D rotation: x' = x c - y s, y' = x s + y c
+            # Mapping: GX -> LY, GY -> LZ
+            # LZ is rotated GY.
+            # Vector (0,1) rotated by theta is (-sin, cos)
+            lz_x = -sin_t
+            lz_y = cos_t
+            lz_z = 0.0
+            
+            local_axes["x_axis"] = [0.0, 0.0, 1.0] # Always Vertical
+            local_axes["y_axis"] = [round(ly_x, 6), round(ly_y, 6), round(ly_z, 6)]
+            local_axes["z_axis"] = [round(lz_x, 6), round(lz_y, 6), round(lz_z, 6)]
+            
+            # Set explicit rotation value
+            local_axes["rotation_angle_deg"] = float(COLUMN_ROTATION_DEG)
+            
+            # Remove web_direction for columns (Requested by User)
+            if "web_direction" in local_axes:
+                 # Dictionary keys are strings, but we didn't add it in the default dict above? 
+                 # Wait, I removed "web_direction" from the default dict above in this replacement content.
+                 # Ah, for beams I added it. For columns I just don't add it.
+                 pass
 
     except Exception as e:
         pass
@@ -891,7 +857,7 @@ try:
         
         if app_version >= 2023:
             try:
-                print("\\n🔄 Applying Analytical Cross-Section Rotations...")
+                print("🔄 Applying Analytical Cross-Section Rotations...")
                 
                 # Get all analytical members
                 analytical_members = FilteredElementCollector(doc).OfClass(AnalyticalMember).WhereElementIsNotElementType().ToElements()
