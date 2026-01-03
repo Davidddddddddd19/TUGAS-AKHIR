@@ -1311,15 +1311,17 @@ if json_success:
                                     for nid, val in results['nodes'].items():
                                         reac = val.get('reaction')
                                         if reac:
-                                            # USER REQUEST: Order Fx - Fy - Fz
-                                            # Analysis.json stores [Fy, Fx, Fz...] due to previous swap
-                                            # So we map: reac[1]->Fx, reac[0]->Fy
-                                            # USER REQUEST: Swap Mx, My
-                                            # Map: reac[4]->Mx, reac[3]->My
+                                            # Dictionary keys are already F1, F2, F3, M1, M2, M3
+                                            f1 = reac.get('F1', 0.0)
+                                            f2 = reac.get('F2', 0.0)
+                                            f3 = reac.get('F3', 0.0)
+                                            m1 = reac.get('M1', 0.0)
+                                            m2 = reac.get('M2', 0.0)
+                                            m3 = reac.get('M3', 0.0)
+                                            
                                             data_reac.append([
                                                 nid, 
-                                                round(reac[1], 2), round(reac[0], 2), round(reac[2], 2), 
-                                                round(reac[4], 2), round(reac[3], 2), round(reac[5], 2)
+                                                f1, f2, f3, m1, m2, m3
                                             ])
                                     
                                     if data_reac:
@@ -1327,7 +1329,7 @@ if json_success:
                                         print_center_table(
                                             output=out,
                                             data=data_reac,
-                                            columns=["Node ID", "Fx (N)", "Fy (N)", "Fz (N)", "Mx (Nmm)", "My (Nmm)", "Mz (Nmm)"],
+                                            columns=["Node ID", "Fx (N)", "Fy (N)", "Fz (N)", "M1 (Nmm)", "M2 (Nmm)", "M3 (Nmm)"],
                                             title="Reaksi Tumpuan ({})".format(case_key)
                                         )
                                     else:
@@ -1373,17 +1375,24 @@ if json_success:
                                             # --- AMBIL DATA DATA ---
                                             elem_name = "{} : {}".format(el.Symbol.FamilyName, el.Name)
                                             
-                                            # SAP2000 Style Outputs
-                                            p_val = val.get('p', 0.0)
-                                            t_val = val.get('t', 0.0)
-                                            v2_val = val.get('v2', 0.0)
-                                            v3_val = val.get('v3', 0.0)
-                                            m2_val = val.get('m2', 0.0)
-                                            m3_val = val.get('m3', 0.0)
+                                            # SAP2000 Style Outputs (Keys from Analysis.py: Fx, Fy, Fz, Mx, My, Mz)
+                                            # Mapping Logic:
+                                            # P (Axial) = Fx
+                                            # V2 (Shear Y) = Fy
+                                            # V3 (Shear Z) = Fz
+                                            # T (Torsion) = Mx
+                                            # M2 (Moment Y) = My
+                                            # M3 (Moment Z) = Mz
+                                            
+                                            p_val = val.get('Fx', 0.0)
+                                            v2_val = val.get('Fy', 0.0)
+                                            v3_val = val.get('Fz', 0.0)
+                                            t_val = val.get('Mx', 0.0)
+                                            m2_val = val.get('My', 0.0)
+                                            m3_val = val.get('Mz', 0.0)
 
-                                            # Fallback for Legacy JSON (jika json lama)
-                                            if p_val == 0.0 and 'axial' in val: p_val = val.get('axial', 0.0)
-                                            if m3_val == 0.0 and ('moment_major' in val): m3_val = val.get('moment_major', 0.0)
+                                            # Fallback (Safety if keys missing)
+                                            if p_val == 0.0 and 'p' in val: p_val = val.get('p', 0.0)
 
                                             # --- UPDATE STATISTIK MAKSIMUM & MINIMUM ---
                                             id_display = "[{}] {}".format(eid, elem_name)
@@ -1438,8 +1447,8 @@ if json_success:
                                     summary_rows = []
                                     labels = {
                                         "p": "Axial (P)", "t": "Torsi (T)", 
-                                        "v2": "Shear Major (V2)", "v3": "Shear Minor (V3)",
-                                        "m2": "Momen Minor (M2)", "m3": "Momen Major (M3)"
+                                        "v2": "Shear (V2)", "v3": "Shear (V3)",
+                                        "m2": "Momen (M2)", "m3": "Momen (M3)"
                                     }
                                     
                                     for k in components:
