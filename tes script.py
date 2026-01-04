@@ -1682,11 +1682,14 @@ if json_success:
                                         min_v = stats[k]["min"]
                                         if min_v > 1.0e19: min_v = 0.0
                                         
+                                        # Tentukan satuan: N untuk gaya, Nmm untuk momen/torsi
+                                        unit = "N" if k in ["p", "v2", "v3"] else "Nmm"
+                                        
                                         summary_rows.append([
                                             labels[k],
-                                            "{} Nmm".format(round(max_v, 2)), 
+                                            "{} {}".format(round(max_v, 2), unit), 
                                             stats[k]["max_id"],
-                                            "{} Nmm".format(round(min_v, 2)), 
+                                            "{} {}".format(round(min_v, 2), unit), 
                                             stats[k]["min_id"]
                                         ])
                                     
