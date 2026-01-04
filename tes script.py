@@ -274,7 +274,9 @@ def get_section_properties(element, doc):
         "Ix_mm4": 0.0, "Iy_mm4": 0.0, 
         "Zx_mm3": 0.0, "Zy_mm3": 0.0,  # Plastic modulus
         "Sx_mm3": 0.0, "Sy_mm3": 0.0,  # Elastic modulus
-        "J_mm4": 0.0, "Cw_mm6": 0.0   # Torsion constant, Warping constant
+        "J_mm4": 0.0, "Cw_mm6": 0.0,   # Torsion constant, Warping constant
+        "Avz_mm2": 0.0, "Avy_mm2": 0.0, # Shear Areas
+        "rx_mm": 0.0, "ry_mm": 0.0      # Radii of Gyration
     }
     try:
         elem_type = doc.GetElement(element.GetTypeId())
@@ -427,13 +429,30 @@ def get_section_properties(element, doc):
                 props["J_mm4"] = round(J_basic + J_fillet, 0)
                 
                 # -------------------------------------------------------
-                # WARPING CONSTANT (Cw)
+                # Warping Constant Cw
                 # For doubly symmetric I-section:
                 # Cw = Iy * ((d - tf)^2) / 4
                 # -------------------------------------------------------
                 h0 = d - tf  # Distance between flange centroids
                 Cw = props["Iy_mm4"] * (h0**2) / 4.0
                 props["Cw_mm6"] = round(Cw, 0)
+
+                # -------------------------------------------------------
+                # SHEAR AREAS (Avz, Avy)
+                # Avz (Strong Axis Shear) ~ d * tw
+                # Avy (Weak Axis Shear) ~ 2 * b * tf
+                # -------------------------------------------------------
+                props["Avz_mm2"] = round(d * tw, 0)
+                props["Avy_mm2"] = round(2 * b * tf, 0)
+
+                # -------------------------------------------------------
+                # RADIUS OF GYRATION (rx, ry)
+                # rx = sqrt(Ix / A)
+                # ry = sqrt(Iy / A)
+                # -------------------------------------------------------
+                if props["Area_mm2"] > 0:
+                    props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 1)
+                    props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 1)
             
             return props
 
@@ -495,6 +514,23 @@ def get_section_properties(element, doc):
             # Warping constant
             h0 = d - tf
             props["Cw_mm6"] = round(Iy * h0**2 / 4.0, 0)
+            
+            # -------------------------------------------------------
+            # SHEAR AREAS (Avz, Avy)
+            # Avz (Strong Axis Shear) ~ d * tw
+            # Avy (Weak Axis Shear) ~ 2 * b * tf
+            # -------------------------------------------------------
+            props["Avz_mm2"] = round(d * tw, 0)
+            props["Avy_mm2"] = round(2 * b * tf, 0)
+
+            # -------------------------------------------------------
+            # RADIUS OF GYRATION (rx, ry)
+            # rx = sqrt(Ix / A)
+            # ry = sqrt(Iy / A)
+            # -------------------------------------------------------
+            if props["Area_mm2"] > 0:
+                props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 1)
+                props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 1)
             
             # Set default centroids for symmetric section
             props["cx_mm"] = round(b / 2.0, 2)
