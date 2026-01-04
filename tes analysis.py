@@ -236,7 +236,7 @@ def run_load_case(data, case_type):
                 "V2": loc_end["V2"],       # Shear V2: direct (no negation)
                 "V3": loc_end["V3"],       # Shear V3: direct (no negation)
                 "T": -loc_end["T"],        # Torsion: standard negation
-                "M2": loc_end["M2"],       # M2: direct (no negation)
+                "M2": loc_end["M2"],       # M2: direct - allows opposite sign from start for proper interpolation
                 "M3": loc_end["M3"]        # M3: direct (no negation)
             }        
             
@@ -300,10 +300,10 @@ def run_load_case(data, case_type):
             # Shear V3(x) = V3_start - (W3_total/L)*x
             v3_x = v3_s - W3_total * ratio
             
-            # SAP2000 Convention: dM2/dx = -V3 (NEGATIVE relationship)
-            # When V3 is negative, M2 INCREASES
-            # M2(x) = M2_start - V3_start*x + (W3_total/L)*x²/2
-            m2_x = m2_s - v3_s * x + (W3_total / length_mm) * (x**2) / 2.0
+            # With output negation applied, use dM2/dx = +V3 (standard structural relationship)
+            # When V3 is negative, internal M2 increases (before output negation)
+            # M2(x) = M2_start + V3_start*x - (W3_total/L)*x²/2
+            m2_x = m2_s + v3_s * x - (W3_total / length_mm) * (x**2) / 2.0
             
             interp["V3"] = v3_x
             interp["M2"] = m2_x
@@ -824,7 +824,7 @@ def run_load_case(data, case_type):
                                   "V2": round(forces["V2"], 2),
                                   "V3": round(forces["V3"], 2),
                                   "T":  round(forces["T"], 2),
-                                  "M2": round(forces["M2"], 2),
+                                  "M2": round(-forces["M2"], 2),  # SAP2000 sign convention
                                   "M3": round(forces["M3"], 2)
                               })
                           
@@ -873,7 +873,7 @@ def run_load_case(data, case_type):
                                         "V2": round(forces["V2"], 2),
                                         "V3": round(forces["V3"], 2),
                                         "T":  round(forces["T"], 2),
-                                        "M2": round(forces["M2"], 2),
+                                        "M2": round(-forces["M2"], 2),  # SAP2000 sign convention
                                         "M3": round(forces["M3"], 2)
                                     })
                                     
