@@ -168,160 +168,128 @@ def run_load_case(data, case_type):
             
             return {"P":Fx_loc, "V2":Fy_loc, "V3":Fz_loc, "T":Mx_loc, "M2":My_loc, "M3":Mz_loc}
 
-        def get_forces_at_station(elem_id, ratio):
+        def get_internal_forces_at_station(elem_id, ratio, local_axes):
             """
-            Get global forces at any station along element (SAP2000 Frame Diagram style).
+            Get INTERNAL LOCAL forces at any station (Corrected for Start/End node conventions).
             
             Args:
                 elem_id: OpenSees element ID
-                ratio: Station position (0.0 = start, 1.0 = end, 0.0 < ratio < 1.0 = intermediate)
-                
-            Returns:
-                List of 6 global forces [Fx, Fy, Fz, Mx, My, Mz]
-            """
-            forces = ops.eleForce(elem_id)
-            
-            if ratio <= 0.0:
-                return list(forces[:6])  # Start node forces
-            elif ratio >= 1.0:
-                return list(forces[6:])  # End node forces
-            else:
-                # Linear interpolation for intermediate points
-                # For uniform distributed loads, this gives good approximation
-                start_forces = forces[:6]
-                end_forces = forces[6:]
-                
-                interp_forces = []
-                for i in range(6):
-                    # Linear interpolation
-                    val = start_forces[i] * (1 - ratio) + end_forces[i] * ratio
-                    interp_forces.append(val)
-                
-                return interp_forces
-
-        def find_zero_crossing(stations, component, elem_id, local_axes):
-            """
-            Find station where a force/moment component crosses zero.
-            
-            Args:
-                stations: List of sampled stations with forces
-                component: Component name ('V2', 'V3', 'M2', 'M3')
-                elem_id: Element ID for force query
+                ratio: Station position (0.0 to 1.0)
                 local_axes: Local coordinate system
                 
             Returns:
-                Station dict or None if no crossing found
+                Dict of local forces {P, V2, V3, T, M2, M3}
             """
+            # Get full nodal forces (12 values: 6 start, 6 end)
+            # Note: eleForce returns Resisting Forces (Force by Element on Node).
+            # We need Action Forces (Force by Node on Element) for internal force calc.
+            # So we negate the values.
+            forces_resisting = ops.eleForce(elem_id)
+            forces = [-val for val in forces_resisting]
+            if len(forces) < 12:
+                # Fallback for unexpected element types
+                f_start = forces[:6]
+                loc_start = calculate_local_forces(f_start, local_axes)
+                # Apply Start Node calibration
+                return {
+                    "P": -loc_start["P"], "V2": -loc_start["V2"], "V3": -loc_start["V3"],
+                    "T": loc_start["T"], "M2": loc_start["M2"], "M3": -loc_start["M3"]
+                }
+            
+            # Extract Start and End Nodal Forces (Global)
+            f_start_global = forces[:6]
+            f_end_global = forces[6:]
+            
+            # Transform to Local
+            loc_start = calculate_local_forces(f_start_global, local_axes)
+            loc_end = calculate_local_forces(f_end_global, local_axes)
+            
+            # Apply Sign Conventions for Internal Forces
+            # START Node Calibration (From previous successful steps):
+            # P:-P, V2:-V2, V3:-V3, T:+T, M2:+M2, M3:-M3
+            start_internal = {
+                "P": -loc_start["P"],
+                "V2": -loc_start["V2"],
+                "V3": -loc_start["V3"],
+                "T": loc_start["T"],
+                "M2": loc_start["M2"],
+                "M3": -loc_start["M3"]
+            }
+            
+            # END Node Convention (Flip of Start for P, V, M to maintain internal continuity)
+            # P: +P, V2: +V2, V3: +V3, T: -T, M2: -M2, M3: +M3
+            end_internal = {
+                "P": loc_end["P"],
+                "V2": loc_end["V2"],
+                "V3": loc_end["V3"],
+                "T": -loc_end["T"],
+                "M2": -loc_end["M2"],
+                "M3": loc_end["M3"]
+            }
+            
+            # Linear Interpolation
+            interp = {}
+            for key in ["P", "V2", "V3", "T", "M2", "M3"]:
+                val = start_internal[key] * (1 - ratio) + end_internal[key] * ratio
+                interp[key] = val
+                
+            return interp
+
+        def find_zero_crossing(stations, component, elem_id, local_axes):
+            # ... (Logic needs update to use 'forces' dict directly instead of 'forces' list)
             for i in range(len(stations) - 1):
                 v1 = stations[i]['forces'][component]
                 v2 = stations[i+1]['forces'][component]
                 
-                # Check for sign change (zero crossing)
-                if abs(v1) < 0.01 or abs(v2) < 0.01:  # Already near zero
-                    continue
+                if abs(v1) < 0.01 or abs(v2) < 0.01: continue
                     
-                if v1 * v2 < 0:  # Different signs
-                    # Linear interpolation to find exact zero point
+                if v1 * v2 < 0:
                     ratio1 = stations[i]['station']
                     ratio2 = stations[i+1]['station']
-                    
                     zero_ratio = ratio1 - v1 * (ratio2 - ratio1) / (v2 - v1)
-                    zero_ratio = max(0.0, min(1.0, zero_ratio))  # Clamp to [0,1]
+                    zero_ratio = max(0.0, min(1.0, zero_ratio))
                     
-                    # Get forces at zero crossing
-                    forces_global = get_forces_at_station(elem_id, zero_ratio)
-                    forces_local = calculate_local_forces(forces_global, local_axes)
-                    
-                    return {
-                        "station": round(zero_ratio, 4),
-                        "forces": forces_local
-                    }
+                    forces_local = get_internal_forces_at_station(elem_id, zero_ratio, local_axes)
+                    return {"station": round(zero_ratio, 4), "forces": forces_local}
             return None
 
         def find_max_point(stations, component):
-            """
-            Find station with maximum absolute value of a component.
-            
-            Args:
-                stations: List of sampled stations with forces
-                component: Component name ('P', 'V2', 'V3', 'T', 'M2', 'M3')
-                
-            Returns:
-                Station dict or None if max is at boundary
-            """
             max_val = 0
             max_station = None
-            
             for s in stations:
                 val = abs(s['forces'][component])
                 if val > max_val:
                     max_val = val
                     max_station = s
-            
-            # Return only if max is NOT at boundaries (boundaries already included)
             if max_station and 0.0 < max_station['station'] < 1.0:
                 return max_station
             return None
 
         def find_critical_stations(elem_id, local_axes, num_samples=11):
-            """
-            Find critical stations along element (SAP2000 Diagram for Frame Object).
-            
-            Returns stations at:
-            - Boundaries (0.0, 1.0)
-            - Zero crossings (where shear/moment = 0)
-            - Maximum/minimum points (where forces/moments are max)
-            
-            Args:
-                elem_id: OpenSees element ID
-                local_axes: Element local coordinate system
-                num_samples: Number of points to sample for critical point detection
-                
-            Returns:
-                List of critical stations with local forces
-            """
-            
-            # Sample forces at regular intervals
             sample_stations = []
             for i in range(num_samples):
                 ratio = i / (num_samples - 1)
-                forces_global = get_forces_at_station(elem_id, ratio)
-                forces_local = calculate_local_forces(forces_global, local_axes)
-                
-                sample_stations.append({
-                    "station": ratio,
-                    "forces": forces_local
-                })
+                # Use NEW function
+                forces_local = get_internal_forces_at_station(elem_id, ratio, local_axes)
+                sample_stations.append({"station": ratio, "forces": forces_local})
             
-            # Critical stations to include
-            critical_stations = []
+            critical_stations = [sample_stations[0], sample_stations[-1]]
             
-            # 1. Always include boundaries
-            critical_stations.append(sample_stations[0])   # Station 0.0
-            critical_stations.append(sample_stations[-1])  # Station 1.0
-            
-            # 2. Find zero crossings for shear and moments (important for diagrams)
             for component in ['V2', 'V3', 'M2', 'M3']:
                 zero_station = find_zero_crossing(sample_stations, component, elem_id, local_axes)
-                if zero_station and zero_station not in critical_stations:
-                    critical_stations.append(zero_station)
+                if zero_station: critical_stations.append(zero_station) # Simplified check
             
-            # 3. Find maximum points for all components
             for component in ['P', 'V2', 'V3', 'T', 'M2', 'M3']:
                 max_station = find_max_point(sample_stations, component)
-                if max_station and max_station not in critical_stations:
-                    critical_stations.append(max_station)
+                if max_station: critical_stations.append(max_station)
             
-            # Sort by station location
             critical_stations.sort(key=lambda x: x['station'])
             
-            # Remove duplicates (stations very close to each other)
-            unique_stations = []
+            unique = []
             for s in critical_stations:
-                if not unique_stations or abs(s['station'] - unique_stations[-1]['station']) > 0.01:
-                    unique_stations.append(s)
-            
-            return unique_stations
+                if not unique or abs(s['station'] - unique[-1]['station']) > 0.01:
+                    unique.append(s)
+            return unique
 
 
         # --- RESET MODEL ---
@@ -778,8 +746,12 @@ def run_load_case(data, case_type):
                                "element_length_mm": element_length,
                                "stations": stations_output
                             }
-                except:
+                except Exception:
+                    import traceback
+                    print(f"Error extracting element {eid}:")
+                    traceback.print_exc()
                     res["elements"][eid] = {"error": "N/A"}
+
 
             # --- EQUILIBRIUM CHECK ---
             res["summary"]["total_applied_z"] = round(total_applied_force_z, 2)
