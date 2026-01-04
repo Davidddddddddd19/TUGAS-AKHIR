@@ -1358,7 +1358,7 @@ if json_success:
                                 data_elem = []
                                 
                                 # Reset Variabel Max/Min Stats untuk semua komponen
-                                components = ["p", "t", "v2", "v3", "m2", "m3"]
+                                components = ["p", "v2", "v3", "t", "m2", "m3"]
                                 # Init dengan +/- infinity
                                 stats = {k: {"max": -1.0e20, "max_id": "-", "min": 1.0e20, "min_id": "-"} for k in components}
 
@@ -1430,9 +1430,9 @@ if json_success:
                                                 str(eid),
                                                 elem_name,
                                                 round(p_val, 2),
-                                                round(t_val, 2),
                                                 round(v2_val, 2),
                                                 round(v3_val, 2),
+                                                round(t_val, 2),
                                                 round(m2_val, 2),
                                                 round(m3_val, 2)
                                             ])
@@ -1449,7 +1449,7 @@ if json_success:
                                         print_center_table(
                                             output=out,
                                             data=data_elem,
-                                            columns=["ID", "Family & Type", "P (N)", "T (Nmm)", "V2 (N)", "V3 (N)", "M2 (Nmm)", "M3 (Nmm)"],
+                                            columns=["ID", "Family & Type", "P (N)", "V2 (N)", "V3 (N)", "T (Nmm)", "M2 (Nmm)", "M3 (Nmm)"],
                                             title="Detail Gaya Dalam Elemen Asli ({})".format(case_key)
                                         )
                                     else:
