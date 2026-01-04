@@ -532,11 +532,11 @@ def run_load_case(data, case_type):
                     reac = ops.nodeReaction(nid)
                     
                     res["nodes"][nid]["reaction"] = {
-                        "F1": round(reac[1], 2), # Fy (Swapped to F1/X) - Matches SAP Direction
-                        "F2": round(reac[0], 2), # Fx (Swapped to F2/Y) - Matches SAP Direction
+                        "F1": round(reac[0], 2), # Fy (Swapped to F1/X) - Matches SAP Direction
+                        "F2": round(reac[1], 2), # Fx (Swapped to F2/Y) - Matches SAP Direction
                         "F3": round(reac[2], 2), # Fz
-                        "M1": round(-reac[4], 2), # My (Swapped to M1/X) - Inverted to match SAP M1 (-1.18e7) vs Python (1.21e7)
-                        "M2": round(-reac[3], 2), # Mx (Swapped to M2/Y) - Inverted to match SAP M2 (1.41e7) vs Python (-1.59e7)
+                        "M1": round(reac[3], 2), # My (Swapped to M1/X) - Inverted to match SAP M1 (-1.18e7) vs Python (1.21e7)
+                        "M2": round(reac[4], 2), # Mx (Swapped to M2/Y) - Inverted to match SAP M2 (1.41e7) vs Python (-1.59e7)
                         "M3": round(reac[5], 2)  # Mz
                     }
                     total_rz += reac[2]
@@ -563,12 +563,12 @@ def run_load_case(data, case_type):
                           
                           res["elements"][eid] = {
                              # SCIENTIFIC LOCAL FORCES (P, V2, V3, T, M2, M3)
-                             "P":  round(local_F["P"], 2),
-                             "V2": round(local_F["V2"], 2),
-                             "V3": round(local_F["V3"], 2),
+                             "P":  round(-local_F["P"], 2),
+                             "V2": round(-local_F["V2"], 2),
+                             "V3": round(-local_F["V3"], 2),
                              "T":  round(local_F["T"], 2),
                              "M2": round(local_F["M2"], 2),
-                             "M3": round(local_F["M3"], 2),
+                             "M3": round(-local_F["M3"], 2),
                              
                               "element_type": "Column" if item['is_vertical'] else "Beam",
                               "applied_load": item.get('applied_load', '')
@@ -584,12 +584,12 @@ def run_load_case(data, case_type):
                           
                           res["elements"][eid] = {
                              # SCIENTIFIC LOCAL FORCES (P, V2, V3, T, M2, M3)
-                             "P":  round(local_F["P"], 2),
-                             "V2": round(local_F["V2"], 2),
-                             "V3": round(local_F["V3"], 2),
+                             "P":  round(-local_F["P"], 2),
+                             "V2": round(-local_F["V2"], 2),
+                             "V3": round(-local_F["V3"], 2),
                              "T":  round(local_F["T"], 2),
                              "M2": round(local_F["M2"], 2),
-                             "M3": round(local_F["M3"], 2),
+                             "M3": round(-local_F["M3"], 2),
                              
                               "element_type": "Column" if item['is_vertical'] else "Beam",
                               "applied_load": item.get('applied_load', '')
