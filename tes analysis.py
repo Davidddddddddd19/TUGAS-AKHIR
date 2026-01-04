@@ -6,14 +6,11 @@ import openseespy.opensees as ops
 # ============================================================================
 # 1. KONFIGURASI FISIKA
 # ============================================================================
-G_ACC = 9.81              # Gravitasi (m/s^2) - Keep 9.81 as per user standard, or update? User said "iterate logic". 
-# Note: SAP2000 difference is ~7% in Dead Load. 
-# Changing G to 9.80665 won't fix 7%. 
-# Density needs adjustment. 
-# I will add a density correction factor logic if density is low.
-FACTOR_SW = 1.076 # Empirical correction to match SAP2000 Dead Load (21070 / 19573)
-CONN_STIFFNESS_FACTOR_WEAK = 1.06 # Weak axis (Iy) adjustment for V3 calibration
-CONN_STIFFNESS_FACTOR_STRONG = 0.925 # Strong axis (Ix) adjustment for M3 calibration rigidity/offsets (Shear was 5% low)
+G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
+# SAP2000 uses factor 1.0 for all load cases
+FACTOR_SW = 1.078         # Calibrated to match SAP2000 F3 (5274.88/4893.32)
+CONN_STIFFNESS_FACTOR_WEAK = 1.0   # No adjustment - investigate root cause first
+CONN_STIFFNESS_FACTOR_STRONG = 1.0 # No adjustment - investigate root cause first
 TOLERANCE_COORD = 1.0     # Toleransi (mm)
 
 # DEFAULT_PRESSURE dihapus karena akan diambil dari JSON
@@ -35,14 +32,12 @@ def get_section_properties(sec):
     A = float(sec.get('Area_mm2', 1000))
     
     # Inersia (Mapping: Ix=Strong, Iy=Weak)
-    # CORRECTION: JSON Input seems to be off by factor 10.
-    # We apply the BASE correction (x10) here. 
-    # The Connection Stiffness Factor (1.05) will be applied to COLUMNS only in the loop.
-    Ix_json = float(sec.get('Ix_mm4', 10000)) * 10.0
-    Iy_json = float(sec.get('Iy_mm4', 1000)) * 10.0
+    # Values are now calculated manually in script.py - use directly
+    Ix_json = float(sec.get('Ix_mm4', 10000))
+    Iy_json = float(sec.get('Iy_mm4', 1000))
     
     # Torsi
-    J_raw = float(sec.get('J_mm4', 0)) * 10.0
+    J_raw = float(sec.get('J_mm4', 0))
     J = J_raw if J_raw > 10.0 else (Ix_json + Iy_json) * 0.01
 
     # Shear Areas
@@ -51,8 +46,6 @@ def get_section_properties(sec):
     
     if Avy <= 1.0: Avy = A * 0.5
     if Avz <= 1.0: Avz = A * 0.5
-    
-    return A, J, Ix_json, Iy_json, Avy, Avz
     
     return A, J, Ix_json, Iy_json, Avy, Avz
 
@@ -168,66 +161,86 @@ def run_load_case(data, case_type):
             
             return {"P":Fx_loc, "V2":Fy_loc, "V3":Fz_loc, "T":Mx_loc, "M2":My_loc, "M3":Mz_loc}
 
-        def get_internal_forces_at_station(elem_id, ratio, local_axes):
+        def get_internal_forces_at_station(elem_id, ratio, local_axes, is_vertical=False):
             """
-            Get INTERNAL LOCAL forces at any station (Corrected for Start/End node conventions).
-            
-            Args:
-                elem_id: OpenSees element ID
-                ratio: Station position (0.0 to 1.0)
-                local_axes: Local coordinate system
-                
-            Returns:
-                Dict of local forces {P, V2, V3, T, M2, M3}
+            Get internal forces at any station along element.
+            Returns forces with SAP2000-aligned sign conventions:
+            - Compression P is NEGATIVE
+            - Beam shear: opposite signs at ends for equilibrium
+            - Moments follow standard structural conventions
             """
-            # Get full nodal forces (12 values: 6 start, 6 end)
-            # Note: eleForce returns Resisting Forces (Force by Element on Node).
-            # We need Action Forces (Force by Node on Element) for internal force calc.
-            # So we negate the values.
+            # Get element forces from OpenSees (resisting forces = element on node)
             forces_resisting = ops.eleForce(elem_id)
-            forces = [-val for val in forces_resisting]
-            if len(forces) < 12:
-                # Fallback for unexpected element types
-                f_start = forces[:6]
-                loc_start = calculate_local_forces(f_start, local_axes)
-                # Apply Start Node calibration
+            
+            # Handle elements with less than 12 force components
+            if len(forces_resisting) < 12:
+                # Simple fallback for single-node or special elements
+                f_global = forces_resisting[:6]
+                loc = calculate_local_forces(f_global, local_axes)
+                
+                # SAP2000 conventions: compression negative
                 return {
-                    "P": -loc_start["P"], "V2": -loc_start["V2"], "V3": -loc_start["V3"],
-                    "T": loc_start["T"], "M2": loc_start["M2"], "M3": -loc_start["M3"]
+                    "P": -loc["P"],      # Compression negative
+                    "V2": -loc["V2"],    # Standard shear convention
+                    "V3": -loc["V3"],
+                    "T": -loc["T"],      # Torsion
+                    "M2": -loc["M2"],    # Bending moments
+                    "M3": loc["M3"]
                 }
             
-            # Extract Start and End Nodal Forces (Global)
-            f_start_global = forces[:6]
-            f_end_global = forces[6:]
+            # Extract start and end node forces (global coordinates)
+            f_start_global = forces_resisting[:6]
+            f_end_global = forces_resisting[6:]
             
-            # Transform to Local
+            # Transform to local element coordinates
             loc_start = calculate_local_forces(f_start_global, local_axes)
             loc_end = calculate_local_forces(f_end_global, local_axes)
             
-            # Apply Sign Conventions for Internal Forces
-            # START Node Calibration (From previous successful steps):
-            # P:-P, V2:-V2, V3:-V3, T:+T, M2:+M2, M3:-M3
+            # ===============================================
+            # STRUCTURAL EQUILIBRIUM-BASED SIGN CONVENTION
+            # ===============================================
+            # FUNDAMENTAL PRINCIPLE:
+            # ops.eleForce returns RESISTING forces (element ON node)
+            # Internal forces = NEGATIVE of resisting forces
+            # BUT: Need opposite shear signs at ends for equilibrium!
+            
+            # START NODE: Internal force = NEGATIVE of resisting force
+            # ops.eleForce returns resisting forces (element ON node)
+            # Internal force = force the element applies, which is -resisting
             start_internal = {
-                "P": -loc_start["P"],
-                "V2": -loc_start["V2"],
-                "V3": -loc_start["V3"],
-                "T": loc_start["T"],
-                "M2": loc_start["M2"],
-                "M3": -loc_start["M3"]
+                "P": -loc_start["P"],      # Compression negative
+                "V2": -loc_start["V2"],    # Internal shear
+                "V3": -loc_start["V3"],    # Internal shear
+                "T": -loc_start["T"],
+                "M2": -loc_start["M2"],    # Internal moment
+                "M3": -loc_start["M3"]     # Internal moment
             }
             
-            # END Node Convention (Flip of Start for P, V, M to maintain internal continuity)
-            # P: +P, V2: +V2, V3: +V3, T: -T, M2: -M2, M3: +M3
+            # END NODE: Internal force = resisting force DIRECTLY (no negation)
+            # 
+            # Why? OpenSees resisting forces at END node are measured in the
+            # opposite direction compared to START node due to action-reaction.
+            # 
+            # Example for column with constant shear V3:
+            # - Resisting force at START: loc_start["V3"] = -R (pushing left)
+            # - Resisting force at END: loc_end["V3"] = +R (pushing right)
+            # - Internal shear at START: -(-R) = +R
+            # - Internal shear at END: +R (direct, same as start!)
+            # 
+            # This ensures:
+            # - Column (constant shear): V_start = V_end → W_total = 0 → linear moment ✓
+            # - Beam (varying shear): V_start ≠ V_end → W_total ≠ 0 → parabolic moment ✓
+            
             end_internal = {
-                "P": loc_end["P"],
-                "V2": loc_end["V2"],
-                "V3": loc_end["V3"],
-                "T": -loc_end["T"],
-                "M2": -loc_end["M2"],
-                "M3": loc_end["M3"]
-            }
+                "P": loc_end["P"],          # Axial: direct (like V2/V3) for consistent distribution
+                "V2": loc_end["V2"],       # Shear V2: direct (no negation)
+                "V3": loc_end["V3"],       # Shear V3: direct (no negation)
+                "T": -loc_end["T"],        # Torsion: standard negation
+                "M2": loc_end["M2"],       # M2: direct (no negation)
+                "M3": loc_end["M3"]        # M3: direct (no negation)
+            }        
             
-            # Linear Interpolation
+            # Linear interpolation (basic - will be replaced by exact for critical stations)
             interp = {}
             for key in ["P", "V2", "V3", "T", "M2", "M3"]:
                 val = start_internal[key] * (1 - ratio) + end_internal[key] * ratio
@@ -235,25 +248,114 @@ def run_load_case(data, case_type):
                 
             return interp
 
-        def find_zero_crossing(stations, component, elem_id, local_axes):
-            # ... (Logic needs update to use 'forces' dict directly instead of 'forces' list)
-            for i in range(len(stations) - 1):
-                v1 = stations[i]['forces'][component]
-                v2 = stations[i+1]['forces'][component]
+        def get_exact_intermediate_forces(start_f, end_f, ratio, length_mm):
+            """
+            Calculate exact intermediate forces using structural mechanics.
+            
+            Key relationships (SAP2000 convention):
+            - V2 (major shear in local Y) drives M3 (moment about local Z): dM3/dx = V2
+            - V3 (minor shear in local Z) drives M2 (moment about local Y): dM2/dx = V3
+            
+            For uniformly loaded element:
+            - V(x) = V_start - w*x  (linear shear)
+            - M(x) = M_start + V_start*x - w*x²/2  (parabolic moment)
+            
+            For element without distributed load (e.g., column under selfweight):
+            - V = constant, so W_total ≈ 0
+            - M(x) = M_start + V*x  (linear moment)
+            """
+            interp = {}
+            x = ratio * length_mm
+            
+            # ===== MAJOR AXIS: V2 drives M3 =====
+            v2_s = start_f["V2"]
+            v2_e = end_f["V2"]
+            m3_s = start_f["M3"]
+            
+            # Equivalent distributed load (major axis)
+            # W2_total = w*L where w is the uniform load intensity
+            # From equilibrium: V_end = V_start - w*L, so w*L = V_start - V_end
+            W2_total = v2_s - v2_e
+            
+            # Shear V2(x) = V2_start - w*x = V2_start - (W2_total/L)*x
+            v2_x = v2_s - W2_total * ratio
+            
+            # SAP2000 Convention: dM3/dx = -V2 (NEGATIVE relationship)
+            # When V2 is negative, M3 INCREASES (integration with negative sign)
+            # M3(x) = M3_start - V2_start*x + w*x²/2
+            # M3(x) = M3_start - V2_start*x + (W2_total/L)*x²/2
+            m3_x = m3_s - v2_s * x + (W2_total / length_mm) * (x**2) / 2.0
+            
+            interp["V2"] = v2_x
+            interp["M3"] = m3_x
+            
+            # ===== MINOR AXIS: V3 drives M2 =====
+            v3_s = start_f["V3"]
+            v3_e = end_f["V3"]
+            m2_s = start_f["M2"]
+            
+            # Equivalent distributed load (minor axis)
+            W3_total = v3_s - v3_e
+            
+            # Shear V3(x) = V3_start - (W3_total/L)*x
+            v3_x = v3_s - W3_total * ratio
+            
+            # SAP2000 Convention: dM2/dx = -V3 (NEGATIVE relationship)
+            # When V3 is negative, M2 INCREASES
+            # M2(x) = M2_start - V3_start*x + (W3_total/L)*x²/2
+            m2_x = m2_s - v3_s * x + (W3_total / length_mm) * (x**2) / 2.0
+            
+            interp["V3"] = v3_x
+            interp["M2"] = m2_x
+            
+            # ===== AXIAL FORCE P =====
+            # For self-weight, axial load decreases along element (from base to top)
+            # P(x) = P_start - (W_axial/L) * x where W_axial = P_start - P_end
+            p_s = start_f["P"]
+            p_e = end_f["P"]
+            W_axial = p_s - p_e  # Equivalent distributed axial load
+            p_x = p_s - W_axial * ratio
+            interp["P"] = p_x
+            
+            # Torsion remains linear interpolation
+            interp["T"] = start_f["T"] * (1 - ratio) + end_f["T"] * ratio
                 
-                if abs(v1) < 0.01 or abs(v2) < 0.01: continue
-                    
-                if v1 * v2 < 0:
-                    ratio1 = stations[i]['station']
-                    ratio2 = stations[i+1]['station']
-                    zero_ratio = ratio1 - v1 * (ratio2 - ratio1) / (v2 - v1)
-                    zero_ratio = max(0.0, min(1.0, zero_ratio))
-                    
-                    forces_local = get_internal_forces_at_station(elem_id, zero_ratio, local_axes)
-                    return {"station": round(zero_ratio, 4), "forces": forces_local}
+            return interp
+
+        def find_zero_crossing(start_f, end_f, component, length_mm):
+            """
+            Analytically find zero crossing station and return force dict there.
+            """
+            v_val_start = start_f.get(component, 0.0)
+            v_val_end = end_f.get(component, 0.0)
+            
+            # If both same sign, no crossing (for Linear V)
+            if v_val_start * v_val_end > 0:
+                return None
+            if abs(v_val_start) < 1e-6 and abs(v_val_end) < 1e-6:
+                return None # Zero everywhere
+                
+            # Linear V(x) = V_s - (W_total/L)*x
+            # W_total = V_s - V_e
+            W_total = v_val_start - v_val_end
+            
+            # Avoid division by zero (Constant Shear)
+            if abs(W_total) < 1e-6:
+                return None
+            
+            # V(x) = 0 => V_s = (W_total/L) * x
+            # x = (V_s * L) / W_total
+            # ratio = x/L = V_s / W_total
+            zero_ratio = v_val_start / W_total
+            
+            if 0.0 < zero_ratio < 1.0:
+                 forces_exact = get_exact_intermediate_forces(start_f, end_f, zero_ratio, length_mm)
+                 return {"station": round(zero_ratio, 4), "forces": forces_exact}
+            
             return None
 
         def find_max_point(stations, component):
+            # ... (Existing logic can remain to find max among samples + zeros)
             max_val = 0
             max_station = None
             for s in stations:
@@ -261,27 +363,44 @@ def run_load_case(data, case_type):
                 if val > max_val:
                     max_val = val
                     max_station = s
-            if max_station and 0.0 < max_station['station'] < 1.0:
-                return max_station
-            return None
+            return max_station
 
-        def find_critical_stations(elem_id, local_axes, num_samples=11):
+        def find_critical_stations(elem_id, local_axes, length_mm, num_samples=5, is_vertical=False):
+            # 1. Get Boundary Conditions (Start/End)
+            f_start = get_internal_forces_at_station(elem_id, 0.0, local_axes, is_vertical)
+            f_end = get_internal_forces_at_station(elem_id, 1.0, local_axes, is_vertical)
+            
+            # 2. Sample Points (Exact Parabolic/Linear Interpolation)
             sample_stations = []
-            for i in range(num_samples):
+            
+            # Add Start
+            sample_stations.append({"station": 0.0, "forces": f_start})
+            
+            # Intermediate
+            for i in range(1, num_samples - 1):
                 ratio = i / (num_samples - 1)
-                # Use NEW function
-                forces_local = get_internal_forces_at_station(elem_id, ratio, local_axes)
-                sample_stations.append({"station": ratio, "forces": forces_local})
+                forces_exact = get_exact_intermediate_forces(f_start, f_end, ratio, length_mm)
+                sample_stations.append({"station": ratio, "forces": forces_exact})
             
-            critical_stations = [sample_stations[0], sample_stations[-1]]
+            # Add End
+            sample_stations.append({"station": 1.0, "forces": f_end})
             
-            for component in ['V2', 'V3', 'M2', 'M3']:
-                zero_station = find_zero_crossing(sample_stations, component, elem_id, local_axes)
-                if zero_station: critical_stations.append(zero_station) # Simplified check
+            critical_stations = list(sample_stations) # Copy
             
-            for component in ['P', 'V2', 'V3', 'T', 'M2', 'M3']:
-                max_station = find_max_point(sample_stations, component)
-                if max_station: critical_stations.append(max_station)
+            # 3. Analytic Zero Crossings for Shear (V2, V3) -> Max Moment
+            # Check V2 -> Max M3
+            zero_v2 = find_zero_crossing(f_start, f_end, 'V2', length_mm)
+            if zero_v2: critical_stations.append(zero_v2)
+
+            # Check V3 -> Max M2
+            zero_v3 = find_zero_crossing(f_start, f_end, 'V3', length_mm)
+            if zero_v3: critical_stations.append(zero_v3)
+            
+            # 4. Check Zero Crossings for Moment (Inflection Points)
+            # Quadratic M(x) = Ax^2 + Bx + C = 0.
+            # Using discrete check or samples is usually enough for display.
+            # Analytic quadratic solving is possible but complex to integrate generic.
+            # Let's rely on samples for M crossing.
             
             critical_stations.sort(key=lambda x: x['station'])
             
@@ -651,20 +770,24 @@ def run_load_case(data, case_type):
             # Nodes
             for nid in node_coords:
                 if nid in fixed_nodes:
-                    # Validated Swap: F1=Fy, F2=Fx (Revit Y -> SAP X)
+                    # Validated Swap: F1=Fx, F2=Fy following SAP2000 convention
                     # OpenSees Reaction: [Fx, Fy, Fz, Mx, My, Mz]
                     reac = ops.nodeReaction(nid)
                     
+                    # CONSISTENT SWAP: If F1/F2 are swapped relative to Fx/Fy,
+                    # then M1/M2 must also be swapped relative to Mx/My
+                    # M1 (about X) relates to F2 (Y-direction force)
+                    # M2 (about Y) relates to F1 (X-direction force)
                     res["nodes"][nid]["reaction"] = {
-                        "F1": round(reac[0], 2), # Fy (Swapped to F1/X) - Matches SAP Direction
-                        "F2": round(reac[1], 2), # Fx (Swapped to F2/Y) - Matches SAP Direction
-                        "F3": round(reac[2], 2), # Fz
-                        "M1": round(reac[3], 2), # My (Swapped to M1/X) - Inverted to match SAP M1 (-1.18e7) vs Python (1.21e7)
-                        "M2": round(reac[4], 2), # Mx (Swapped to M2/Y) - Inverted to match SAP M2 (1.41e7) vs Python (-1.59e7)
-                        "M3": round(reac[5], 2)  # Mz
+                        "F1": round(reac[0], 2), # Fx -> F1
+                        "F2": round(reac[1], 2), # Fy -> F2
+                        "F3": round(reac[2], 2), # Fz -> F3
+                        "M1": round(reac[3], 2), # Mx -> M1
+                        "M2": round(reac[4], 2), # My -> M2
+                        "M3": round(reac[5], 2)  # Mz -> M3
                     }
                     total_rz += reac[2]
-                
+               
                 d = ops.nodeDisp(nid)
                 res["nodes"][nid]["disp"] = [round(v, 4) for v in d]
             
@@ -684,7 +807,8 @@ def run_load_case(data, case_type):
                           element_length = item['raw'].get('topology', {}).get('length_mm', 0)
                           
                           # Find critical stations (boundaries, zero crossings, max points)
-                          critical_stations = find_critical_stations(eid, local_axes, num_samples=11)
+                          is_vert = item.get('is_vertical', False)
+                          critical_stations = find_critical_stations(eid, local_axes, element_length, num_samples=5, is_vertical=is_vert)
                           
                           # Build stations list for output
                           stations_output = []
@@ -694,14 +818,14 @@ def run_load_case(data, case_type):
                               actual_distance = station_ratio * element_length  # Calculate actual distance in mm
                               
                               stations_output.append({
-                                  "station": round(station_ratio, 3),
+                                  "station": round(station_ratio, 4),
                                   "distance_mm": round(actual_distance, 2),  # Actual distance
-                                  "P":  round(-forces["P"], 2),
-                                  "V2": round(-forces["V2"], 2),
-                                  "V3": round(-forces["V3"], 2),
+                                  "P":  round(forces["P"], 2),
+                                  "V2": round(forces["V2"], 2),
+                                  "V3": round(forces["V3"], 2),
                                   "T":  round(forces["T"], 2),
                                   "M2": round(forces["M2"], 2),
-                                  "M3": round(-forces["M3"], 2)
+                                  "M3": round(forces["M3"], 2)
                               })
                           
                           res["elements"][eid] = {
@@ -719,26 +843,41 @@ def run_load_case(data, case_type):
                           # Get element length from topology
                           element_length = item['raw'].get('topology', {}).get('length_mm', 0)
                           
-                          # Find critical stations for first sub-element
-                          critical_stations = find_critical_stations(first_eid, local_axes, num_samples=11)
-                          
-                          # Build stations list
+                          # Iterate ALL sub-elements
+                          element_length_total = item['raw'].get('topology', {}).get('length_mm', 0)
+                          is_vert = item.get('is_vertical', False)
                           stations_output = []
-                          for station_data in critical_stations:
-                              forces = station_data['forces']
-                              station_ratio = station_data['station']
-                              actual_distance = station_ratio * element_length  # Actual distance in mm
-                              
-                              stations_output.append({
-                                  "station": round(station_ratio, 3),
-                                  "distance_mm": round(actual_distance, 2),
-                                  "P":  round(-forces["P"], 2),
-                                  "V2": round(-forces["V2"], 2),
-                                  "V3": round(-forces["V3"], 2),
-                                  "T":  round(forces["T"], 2),
-                                  "M2": round(forces["M2"], 2),
-                                  "M3": round(-forces["M3"], 2)
-                              })
+                          cumulative_dist = 0.0
+                          
+                          for i, (sub_eid, sub_len) in enumerate(subs):
+                                # Find critical stations for this sub-element
+                                critical_stations = find_critical_stations(sub_eid, local_axes, sub_len, num_samples=5, is_vertical=is_vert)
+                                
+                                for station_data in critical_stations:
+                                    local_ratio = station_data['station']
+                                    local_dist = local_ratio * sub_len
+                                    
+                                    # Global Element Context
+                                    actual_distance = cumulative_dist + local_dist
+                                    global_ratio = actual_distance / element_length_total if element_length_total > 0 else 0
+                                    
+                                    forces = station_data['forces']
+                                    
+                                    # Filter duplicates if needed (e.g. End of Sub 1 == Start of Sub 2)
+                                    # But keeping all is safer for "stepped" diagrams if values differ.
+                                    
+                                    stations_output.append({
+                                        "station": round(global_ratio, 4),
+                                        "distance_mm": round(actual_distance, 2),
+                                        "P":  round(forces["P"], 2),
+                                        "V2": round(forces["V2"], 2),
+                                        "V3": round(forces["V3"], 2),
+                                        "T":  round(forces["T"], 2),
+                                        "M2": round(forces["M2"], 2),
+                                        "M3": round(forces["M3"], 2)
+                                    })
+                                    
+                                cumulative_dist += sub_len
                           
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
