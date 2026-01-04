@@ -261,54 +261,185 @@ def get_material_data(element, doc):
     return mat_data
 
 def get_section_properties(element, doc):
+    """
+    Extract section geometric parameters and calculate section properties manually.
+    For I-sections (Wide Flange, UC, UB, etc.):
+    - Extracts: d, b, tf, tw, r (web fillet), centroids
+    - Calculates: Area, Ix, Iy, Zx, Zy, Sx, Sy, J, Cw
+    """
     props = {
         "Area_mm2": 0.0, "d_mm": 0.0, "b_mm": 0.0, "tf_mm": 0.0, "tw_mm": 0.0,
-        "Ix_mm4": 0.0, "Iy_mm4": 0.0, "Zx_mm3": 0.0, "Sx_mm3": 0.0, "J_mm4": 0.0
+        "r_mm": 0.0,  # Web fillet radius
+        "cx_mm": 0.0, "cy_mm": 0.0,  # Centroids
+        "Ix_mm4": 0.0, "Iy_mm4": 0.0, 
+        "Zx_mm3": 0.0, "Zy_mm3": 0.0,  # Plastic modulus
+        "Sx_mm3": 0.0, "Sy_mm3": 0.0,  # Elastic modulus
+        "J_mm4": 0.0, "Cw_mm6": 0.0   # Torsion constant, Warping constant
     }
     try:
         elem_type = doc.GetElement(element.GetTypeId())
         if not elem_type: return props
 
         # Use StructuralSection API if available (Revit 2022+)
+        section = None
         if hasattr(elem_type, "GetStructuralSection"):
-             section = elem_type.GetStructuralSection()
-             if section:
-                 # Geometric Properties
-                 try: props["d_mm"] = round(ft2mm(section.Height),2)
-                 except: pass
-                 try: props["b_mm"] = round(ft2mm(section.Width),2)
-                 except: pass
-                 try: props["tf_mm"] = round(ft2mm(section.FlangeThickness),2)
-                 except: pass
-                 try: props["tw_mm"] = round(ft2mm(section.WebThickness),2)
-                 except: pass
-                 try: props["Area_mm2"] = round(sqft2sqmm(section.SectionArea),2)
-                 except: pass
-                 
-                 # Analysis Properties
-                 try: props["Ix_mm4"] = round(ft42mm4(section.MomentOfInertiaStrongAxis),2)
-                 except: pass
-                 try: props["Iy_mm4"] = round(ft42mm4(section.MomentOfInertiaWeakAxis),2)
-                 except: pass
-                 
-                 # Zx = Plastic Modulus Strong Axis
-                 try: props["Zx_mm3"] = round(ft32mm3(section.PlasticModulusStrongAxis),2)
-                 except: pass
-                 
-                 # Sx = Elastic Modulus Strong Axis
-                 # Note: User list missed this, but standard engineering mapping requires Elastic for Sx.
-                 # If API has it, we use it. If not, fallback to BIP.
-                 try: props["Sx_mm3"] = round(ft32mm3(section.ElasticModulusStrongAxis),2)
-                 except: pass
-                 
-                 try: props["J_mm4"] = round(ft42mm4(section.TorsionalMomentOfInertia),2)
-                 except: pass
-                 
-                 # Torsional Modulus also available: section.TorsionalModulus
-                 
-                 return props
+            section = elem_type.GetStructuralSection()
+        
+        if section:
+            # =========================================================
+            # 1. EXTRACT GEOMETRIC PARAMETERS
+            # =========================================================
+            # Basic dimensions
+            try: props["d_mm"] = round(ft2mm(section.Height), 2)
+            except: pass
+            try: props["b_mm"] = round(ft2mm(section.Width), 2)
+            except: pass
+            try: props["tf_mm"] = round(ft2mm(section.FlangeThickness), 2)
+            except: pass
+            try: props["tw_mm"] = round(ft2mm(section.WebThickness), 2)
+            except: pass
+            
+            # Web Fillet (r) - using get_WebFillet() method
+            try: 
+                r_ft = section.get_WebFillet()
+                props["r_mm"] = round(ft2mm(r_ft), 2)
+            except: 
+                props["r_mm"] = 0.0
+            
+            # Centroid Horizontal (cx) - from centroid to edge
+            try:
+                cx_ft = section.get_CentroidHorizontal()
+                props["cx_mm"] = round(ft2mm(cx_ft), 2)
+            except:
+                # Default: b/2 for symmetric I-section
+                props["cx_mm"] = round(props["b_mm"] / 2.0, 2) if props["b_mm"] > 0 else 0.0
+            
+            # Centroid Vertical (cy) - from centroid to edge  
+            try:
+                cy_ft = section.get_CentroidVertical()
+                props["cy_mm"] = round(ft2mm(cy_ft), 2)
+            except:
+                # Default: d/2 for symmetric I-section
+                props["cy_mm"] = round(props["d_mm"] / 2.0, 2) if props["d_mm"] > 0 else 0.0
+            
+            # Get Area from API first, will recalculate if needed
+            try: props["Area_mm2"] = round(sqft2sqmm(section.SectionArea), 2)
+            except: pass
+            
+            # =========================================================
+            # 2. MANUAL CALCULATION OF SECTION PROPERTIES
+            # =========================================================
+            d = props["d_mm"]    # Total depth
+            b = props["b_mm"]    # Flange width
+            tf = props["tf_mm"]  # Flange thickness
+            tw = props["tw_mm"]  # Web thickness
+            r = props["r_mm"]    # Web fillet radius
+            
+            if d > 0 and b > 0 and tf > 0 and tw > 0:
+                # -------------------------------------------------------
+                # AREA CALCULATION (with fillet)
+                # A = 2*b*tf + (d-2*tf)*tw + (4-pi)*r^2
+                # -------------------------------------------------------
+                h_web = d - 2*tf  # Clear height of web
+                A_flanges = 2 * b * tf
+                A_web = h_web * tw
+                A_fillets = (4 - math.pi) * r * r if r > 0 else 0.0
+                Area_calc = A_flanges + A_web + A_fillets
+                
+                # Use calculated area if API didn't provide
+                if props["Area_mm2"] <= 0:
+                    props["Area_mm2"] = round(Area_calc, 2)
+                
+                # -------------------------------------------------------
+                # MOMENT OF INERTIA - STRONG AXIS (Ix)
+                # Ix = (b*d^3)/12 - 2*((b-tw)/2 * (d-2*tf)^3)/12 + fillet_contribution
+                # Simplified: Ix = (b*d^3 - (b-tw)*h_web^3) / 12 + I_fillet
+                # -------------------------------------------------------
+                Ix_rect = (b * d**3) / 12.0
+                Ix_cutout = ((b - tw) * h_web**3) / 12.0
+                
+                # Fillet contribution to Ix (approximate)
+                # Each fillet is at distance (d/2 - tf - r/2) from centroid
+                if r > 0:
+                    A_fillet_single = (1 - math.pi/4) * r * r
+                    y_fillet = (d/2 - tf - 0.223*r)  # Approximate centroid of fillet
+                    Ix_fillet = 4 * A_fillet_single * y_fillet**2
+                else:
+                    Ix_fillet = 0.0
+                
+                props["Ix_mm4"] = round(Ix_rect - Ix_cutout + Ix_fillet, 0)
+                
+                # -------------------------------------------------------
+                # MOMENT OF INERTIA - WEAK AXIS (Iy)
+                # Iy = 2*(tf*b^3)/12 + (d-2*tf)*tw^3/12 + fillet_contribution
+                # -------------------------------------------------------
+                Iy_flanges = 2 * (tf * b**3) / 12.0
+                Iy_web = (h_web * tw**3) / 12.0
+                
+                # Fillet contribution to Iy (approximate)
+                if r > 0:
+                    x_fillet = (tw/2 + 0.223*r)  # Approximate centroid of fillet from centerline
+                    Iy_fillet = 4 * A_fillet_single * x_fillet**2
+                else:
+                    Iy_fillet = 0.0
+                
+                props["Iy_mm4"] = round(Iy_flanges + Iy_web + Iy_fillet, 0)
+                
+                # -------------------------------------------------------
+                # ELASTIC SECTION MODULUS (Sx, Sy)
+                # Sx = Ix / (d/2) = 2*Ix/d
+                # Sy = Iy / (b/2) = 2*Iy/b
+                # -------------------------------------------------------
+                if d > 0:
+                    props["Sx_mm3"] = round(props["Ix_mm4"] / (d / 2.0), 0)
+                if b > 0:
+                    props["Sy_mm3"] = round(props["Iy_mm4"] / (b / 2.0), 0)
+                
+                # -------------------------------------------------------
+                # PLASTIC SECTION MODULUS (Zx, Zy)
+                # For I-section:
+                # Zx = b*tf*(d-tf) + tw*(d-2*tf)^2/4
+                # Zy = b^2*tf/2 + (d-2*tf)*tw^2/4
+                # -------------------------------------------------------
+                Zx = b * tf * (d - tf) + tw * h_web**2 / 4.0
+                props["Zx_mm3"] = round(Zx, 0)
+                
+                Zy = (b**2 * tf) / 2.0 + (h_web * tw**2) / 4.0
+                props["Zy_mm3"] = round(Zy, 0)
+                
+                # -------------------------------------------------------
+                # TORSIONAL CONSTANT (J)
+                # J = (2*b*tf^3 + (d-tf)*tw^3) / 3
+                # With fillet correction: J_total = J + alpha * D^4
+                # where alpha depends on r/tf ratio
+                # -------------------------------------------------------
+                J_basic = (2 * b * tf**3 + (d - tf) * tw**3) / 3.0
+                
+                # Fillet correction (approximate)
+                if r > 0 and tf > 0:
+                    # Palmer-Maulbetsch formula correction
+                    D = 2 * r + tw
+                    alpha = 0.2 * (r / tf)  # Simplified coefficient
+                    J_fillet = alpha * D**4
+                else:
+                    J_fillet = 0.0
+                
+                props["J_mm4"] = round(J_basic + J_fillet, 0)
+                
+                # -------------------------------------------------------
+                # WARPING CONSTANT (Cw)
+                # For doubly symmetric I-section:
+                # Cw = Iy * ((d - tf)^2) / 4
+                # -------------------------------------------------------
+                h0 = d - tf  # Distance between flange centroids
+                Cw = props["Iy_mm4"] * (h0**2) / 4.0
+                props["Cw_mm6"] = round(Cw, 0)
+            
+            return props
 
-        # FALLBACK: BuiltInParameters (legacy)
+        # =========================================================
+        # FALLBACK: BuiltInParameters (legacy Revit versions)
+        # =========================================================
         def find_val(bip_list, str_list):
             for name in bip_list:
                 if hasattr(BuiltInParameter, name):
@@ -319,19 +450,58 @@ def get_section_properties(element, doc):
                 if p and p.HasValue and p.StorageType == StorageType.Double: return p.AsDouble()
             return 0.0
 
-        props["Area_mm2"] = sqft2sqmm(find_val(["STRUCTURAL_SECTION_AREA"], ["Section Area", "Area"]))
+        # Extract geometric parameters
         props["d_mm"]     = ft2mm(find_val(["STRUCTURAL_SECTION_DEPTH", "FAMILY_HEIGHT_PARAM"], ["Height", "Depth", "d", "h"]))
         props["b_mm"]     = ft2mm(find_val(["STRUCTURAL_SECTION_WIDTH", "FAMILY_WIDTH_PARAM"], ["Width", "b"]))
         props["tf_mm"]    = ft2mm(find_val(["STRUCTURAL_SECTION_FLANGE_THICKNESS"], ["Flange Thickness", "tf"]))
         props["tw_mm"]    = ft2mm(find_val(["STRUCTURAL_SECTION_WEB_THICKNESS"], ["Web Thickness", "tw"]))
-        props["Ix_mm4"]   = ft42mm4(find_val(["STRUCTURAL_SECTION_IX"], ["Ix", "Ixx"]))
-        props["Iy_mm4"]   = ft42mm4(find_val(["STRUCTURAL_SECTION_IY"], ["Iy", "Iyy"]))
-        props["Zx_mm3"]   = ft32mm3(find_val(["STRUCTURAL_SECTION_PLASTIC_MODULUS_STRONG_AXIS"], ["Zx"]))
-        props["Sx_mm3"]   = ft32mm3(find_val(["STRUCTURAL_SECTION_ELASTIC_MODULUS_STRONG_AXIS"], ["Sx"]))
-        props["J_mm4"]    = ft42mm4(find_val(["STRUCTURAL_SECTION_J"], ["J"]))
+        props["r_mm"]     = ft2mm(find_val([], ["r", "Web Fillet", "Fillet Radius"]))
+        props["Area_mm2"] = sqft2sqmm(find_val(["STRUCTURAL_SECTION_AREA"], ["Section Area", "Area"]))
+        
+        # Calculate section properties manually using extracted geometry
+        d = props["d_mm"]
+        b = props["b_mm"]
+        tf = props["tf_mm"]
+        tw = props["tw_mm"]
+        r = props["r_mm"]
+        
+        if d > 0 and b > 0 and tf > 0 and tw > 0:
+            h_web = d - 2*tf
+            
+            # Area
+            if props["Area_mm2"] <= 0:
+                A_fillets = (4 - math.pi) * r * r if r > 0 else 0.0
+                props["Area_mm2"] = round(2*b*tf + h_web*tw + A_fillets, 2)
+            
+            # Ix
+            Ix = (b * d**3 - (b - tw) * h_web**3) / 12.0
+            props["Ix_mm4"] = round(Ix, 0)
+            
+            # Iy
+            Iy = (2 * tf * b**3 + h_web * tw**3) / 12.0
+            props["Iy_mm4"] = round(Iy, 0)
+            
+            # Elastic modulus
+            if d > 0: props["Sx_mm3"] = round(Ix / (d/2), 0)
+            if b > 0: props["Sy_mm3"] = round(Iy / (b/2), 0)
+            
+            # Plastic modulus
+            props["Zx_mm3"] = round(b*tf*(d-tf) + tw*h_web**2/4, 0)
+            props["Zy_mm3"] = round(b**2*tf/2 + h_web*tw**2/4, 0)
+            
+            # Torsional constant
+            props["J_mm4"] = round((2*b*tf**3 + (d-tf)*tw**3) / 3.0, 0)
+            
+            # Warping constant
+            h0 = d - tf
+            props["Cw_mm6"] = round(Iy * h0**2 / 4.0, 0)
+            
+            # Set default centroids for symmetric section
+            props["cx_mm"] = round(b / 2.0, 2)
+            props["cy_mm"] = round(d / 2.0, 2)
 
+        # Round all values to integers
         for k in props: 
-            # "buat section properties memiliki angka bulat" -> Round to integer
             if isinstance(props[k], float): 
                 props[k] = int(round(props[k]))
                 
