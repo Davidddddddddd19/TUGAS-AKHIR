@@ -261,54 +261,204 @@ def get_material_data(element, doc):
     return mat_data
 
 def get_section_properties(element, doc):
+    """
+    Extract section geometric parameters and calculate section properties manually.
+    For I-sections (Wide Flange, UC, UB, etc.):
+    - Extracts: d, b, tf, tw, r (web fillet), centroids
+    - Calculates: Area, Ix, Iy, Zx, Zy, Sx, Sy, J, Cw
+    """
     props = {
         "Area_mm2": 0.0, "d_mm": 0.0, "b_mm": 0.0, "tf_mm": 0.0, "tw_mm": 0.0,
-        "Ix_mm4": 0.0, "Iy_mm4": 0.0, "Zx_mm3": 0.0, "Sx_mm3": 0.0, "J_mm4": 0.0
+        "r_mm": 0.0,  # Web fillet radius
+        "cx_mm": 0.0, "cy_mm": 0.0,  # Centroids
+        "Ix_mm4": 0.0, "Iy_mm4": 0.0, 
+        "Zx_mm3": 0.0, "Zy_mm3": 0.0,  # Plastic modulus
+        "Sx_mm3": 0.0, "Sy_mm3": 0.0,  # Elastic modulus
+        "J_mm4": 0.0, "Cw_mm6": 0.0,   # Torsion constant, Warping constant
+        "Avz_mm2": 0.0, "Avy_mm2": 0.0, # Shear Areas
+        "rx_mm": 0.0, "ry_mm": 0.0      # Radii of Gyration
     }
     try:
         elem_type = doc.GetElement(element.GetTypeId())
         if not elem_type: return props
 
         # Use StructuralSection API if available (Revit 2022+)
+        section = None
         if hasattr(elem_type, "GetStructuralSection"):
-             section = elem_type.GetStructuralSection()
-             if section:
-                 # Geometric Properties
-                 try: props["d_mm"] = round(ft2mm(section.Height),2)
-                 except: pass
-                 try: props["b_mm"] = round(ft2mm(section.Width),2)
-                 except: pass
-                 try: props["tf_mm"] = round(ft2mm(section.FlangeThickness),2)
-                 except: pass
-                 try: props["tw_mm"] = round(ft2mm(section.WebThickness),2)
-                 except: pass
-                 try: props["Area_mm2"] = round(sqft2sqmm(section.SectionArea),2)
-                 except: pass
-                 
-                 # Analysis Properties
-                 try: props["Ix_mm4"] = round(ft42mm4(section.MomentOfInertiaStrongAxis),2)
-                 except: pass
-                 try: props["Iy_mm4"] = round(ft42mm4(section.MomentOfInertiaWeakAxis),2)
-                 except: pass
-                 
-                 # Zx = Plastic Modulus Strong Axis
-                 try: props["Zx_mm3"] = round(ft32mm3(section.PlasticModulusStrongAxis),2)
-                 except: pass
-                 
-                 # Sx = Elastic Modulus Strong Axis
-                 # Note: User list missed this, but standard engineering mapping requires Elastic for Sx.
-                 # If API has it, we use it. If not, fallback to BIP.
-                 try: props["Sx_mm3"] = round(ft32mm3(section.ElasticModulusStrongAxis),2)
-                 except: pass
-                 
-                 try: props["J_mm4"] = round(ft42mm4(section.TorsionalMomentOfInertia),2)
-                 except: pass
-                 
-                 # Torsional Modulus also available: section.TorsionalModulus
-                 
-                 return props
+            section = elem_type.GetStructuralSection()
+        
+        if section:
+            # =========================================================
+            # 1. EXTRACT GEOMETRIC PARAMETERS
+            # =========================================================
+            # Basic dimensions
+            try: props["d_mm"] = round(ft2mm(section.Height), 2)
+            except: pass
+            try: props["b_mm"] = round(ft2mm(section.Width), 2)
+            except: pass
+            try: props["tf_mm"] = round(ft2mm(section.FlangeThickness), 2)
+            except: pass
+            try: props["tw_mm"] = round(ft2mm(section.WebThickness), 2)
+            except: pass
+            
+            # Web Fillet (r) - using get_WebFillet() method
+            try: 
+                r_ft = section.get_WebFillet()
+                props["r_mm"] = round(ft2mm(r_ft), 2)
+            except: 
+                props["r_mm"] = 0.0
+            
+            # Centroid Horizontal (cx) - from centroid to edge
+            try:
+                cx_ft = section.get_CentroidHorizontal()
+                props["cx_mm"] = round(ft2mm(cx_ft), 2)
+            except:
+                # Default: b/2 for symmetric I-section
+                props["cx_mm"] = round(props["b_mm"] / 2.0, 2) if props["b_mm"] > 0 else 0.0
+            
+            # Centroid Vertical (cy) - from centroid to edge  
+            try:
+                cy_ft = section.get_CentroidVertical()
+                props["cy_mm"] = round(ft2mm(cy_ft), 2)
+            except:
+                # Default: d/2 for symmetric I-section
+                props["cy_mm"] = round(props["d_mm"] / 2.0, 2) if props["d_mm"] > 0 else 0.0
+            
+            # Get Area from API first, will recalculate if needed
+            try: props["Area_mm2"] = round(sqft2sqmm(section.SectionArea), 2)
+            except: pass
+            
+            # =========================================================
+            # 2. MANUAL CALCULATION OF SECTION PROPERTIES
+            # =========================================================
+            d = props["d_mm"]    # Total depth
+            b = props["b_mm"]    # Flange width
+            tf = props["tf_mm"]  # Flange thickness
+            tw = props["tw_mm"]  # Web thickness
+            r = props["r_mm"]    # Web fillet radius
+            
+            if d > 0 and b > 0 and tf > 0 and tw > 0:
+                # -------------------------------------------------------
+                # AREA CALCULATION (with fillet)
+                # A = 2*b*tf + (d-2*tf)*tw + (4-pi)*r^2
+                # -------------------------------------------------------
+                h_web = d - 2*tf  # Clear height of web
+                A_flanges = 2 * b * tf
+                A_web = h_web * tw
+                A_fillets = (4 - math.pi) * r * r if r > 0 else 0.0
+                Area_calc = A_flanges + A_web + A_fillets
+                
+                # Use calculated area if API didn't provide
+                if props["Area_mm2"] <= 0:
+                    props["Area_mm2"] = round(Area_calc, 2)
+                
+                # -------------------------------------------------------
+                # MOMENT OF INERTIA - STRONG AXIS (Ix)
+                # Ix = (b*d^3)/12 - 2*((b-tw)/2 * (d-2*tf)^3)/12 + fillet_contribution
+                # Simplified: Ix = (b*d^3 - (b-tw)*h_web^3) / 12 + I_fillet
+                # -------------------------------------------------------
+                Ix_rect = (b * d**3) / 12.0
+                Ix_cutout = ((b - tw) * h_web**3) / 12.0
+                
+                # Fillet contribution to Ix (approximate)
+                # Each fillet is at distance (d/2 - tf - r/2) from centroid
+                if r > 0:
+                    A_fillet_single = (1 - math.pi/4) * r * r
+                    y_fillet = (d/2 - tf - 0.223*r)  # Approximate centroid of fillet
+                    Ix_fillet = 4 * A_fillet_single * y_fillet**2
+                else:
+                    Ix_fillet = 0.0
+                
+                props["Ix_mm4"] = round(Ix_rect - Ix_cutout + Ix_fillet, 0)
+                
+                # -------------------------------------------------------
+                # MOMENT OF INERTIA - WEAK AXIS (Iy)
+                # Iy = 2*(tf*b^3)/12 + (d-2*tf)*tw^3/12 + fillet_contribution
+                # -------------------------------------------------------
+                Iy_flanges = 2 * (tf * b**3) / 12.0
+                Iy_web = (h_web * tw**3) / 12.0
+                
+                # Fillet contribution to Iy (approximate)
+                if r > 0:
+                    x_fillet = (tw/2 + 0.223*r)  # Approximate centroid of fillet from centerline
+                    Iy_fillet = 4 * A_fillet_single * x_fillet**2
+                else:
+                    Iy_fillet = 0.0
+                
+                props["Iy_mm4"] = round(Iy_flanges + Iy_web + Iy_fillet, 0)
+                
+                # -------------------------------------------------------
+                # ELASTIC SECTION MODULUS (Sx, Sy)
+                # Sx = Ix / (d/2) = 2*Ix/d
+                # Sy = Iy / (b/2) = 2*Iy/b
+                # -------------------------------------------------------
+                if d > 0:
+                    props["Sx_mm3"] = round(props["Ix_mm4"] / (d / 2.0), 0)
+                if b > 0:
+                    props["Sy_mm3"] = round(props["Iy_mm4"] / (b / 2.0), 0)
+                
+                # -------------------------------------------------------
+                # PLASTIC SECTION MODULUS (Zx, Zy)
+                # For I-section:
+                # Zx = b*tf*(d-tf) + tw*(d-2*tf)^2/4
+                # Zy = b^2*tf/2 + (d-2*tf)*tw^2/4
+                # -------------------------------------------------------
+                Zx = b * tf * (d - tf) + tw * h_web**2 / 4.0
+                props["Zx_mm3"] = round(Zx, 0)
+                
+                Zy = (b**2 * tf) / 2.0 + (h_web * tw**2) / 4.0
+                props["Zy_mm3"] = round(Zy, 0)
+                
+                # -------------------------------------------------------
+                # TORSIONAL CONSTANT (J)
+                # J = (2*b*tf^3 + (d-tf)*tw^3) / 3
+                # With fillet correction: J_total = J + alpha * D^4
+                # where alpha depends on r/tf ratio
+                # -------------------------------------------------------
+                J_basic = (2 * b * tf**3 + (d - tf) * tw**3) / 3.0
+                
+                # Fillet correction (approximate)
+                if r > 0 and tf > 0:
+                    # Palmer-Maulbetsch formula correction
+                    D = 2 * r + tw
+                    alpha = 0.2 * (r / tf)  # Simplified coefficient
+                    J_fillet = alpha * D**4
+                else:
+                    J_fillet = 0.0
+                
+                props["J_mm4"] = round(J_basic + J_fillet, 0)
+                
+                # -------------------------------------------------------
+                # Warping Constant Cw
+                # For doubly symmetric I-section:
+                # Cw = Iy * ((d - tf)^2) / 4
+                # -------------------------------------------------------
+                h0 = d - tf  # Distance between flange centroids
+                Cw = props["Iy_mm4"] * (h0**2) / 4.0
+                props["Cw_mm6"] = round(Cw, 0)
 
-        # FALLBACK: BuiltInParameters (legacy)
+                # -------------------------------------------------------
+                # SHEAR AREAS (Avz, Avy)
+                # Avz (Strong Axis Shear) ~ d * tw
+                # Avy (Weak Axis Shear) ~ 2 * b * tf
+                # -------------------------------------------------------
+                props["Avz_mm2"] = round(d * tw, 0)
+                props["Avy_mm2"] = round(2 * b * tf, 0)
+
+                # -------------------------------------------------------
+                # RADIUS OF GYRATION (rx, ry)
+                # rx = sqrt(Ix / A)
+                # ry = sqrt(Iy / A)
+                # -------------------------------------------------------
+                if props["Area_mm2"] > 0:
+                    props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 1)
+                    props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 1)
+            
+            return props
+
+        # =========================================================
+        # FALLBACK: BuiltInParameters (legacy Revit versions)
+        # =========================================================
         def find_val(bip_list, str_list):
             for name in bip_list:
                 if hasattr(BuiltInParameter, name):
@@ -319,19 +469,75 @@ def get_section_properties(element, doc):
                 if p and p.HasValue and p.StorageType == StorageType.Double: return p.AsDouble()
             return 0.0
 
-        props["Area_mm2"] = sqft2sqmm(find_val(["STRUCTURAL_SECTION_AREA"], ["Section Area", "Area"]))
+        # Extract geometric parameters
         props["d_mm"]     = ft2mm(find_val(["STRUCTURAL_SECTION_DEPTH", "FAMILY_HEIGHT_PARAM"], ["Height", "Depth", "d", "h"]))
         props["b_mm"]     = ft2mm(find_val(["STRUCTURAL_SECTION_WIDTH", "FAMILY_WIDTH_PARAM"], ["Width", "b"]))
         props["tf_mm"]    = ft2mm(find_val(["STRUCTURAL_SECTION_FLANGE_THICKNESS"], ["Flange Thickness", "tf"]))
         props["tw_mm"]    = ft2mm(find_val(["STRUCTURAL_SECTION_WEB_THICKNESS"], ["Web Thickness", "tw"]))
-        props["Ix_mm4"]   = ft42mm4(find_val(["STRUCTURAL_SECTION_IX"], ["Ix", "Ixx"]))
-        props["Iy_mm4"]   = ft42mm4(find_val(["STRUCTURAL_SECTION_IY"], ["Iy", "Iyy"]))
-        props["Zx_mm3"]   = ft32mm3(find_val(["STRUCTURAL_SECTION_PLASTIC_MODULUS_STRONG_AXIS"], ["Zx"]))
-        props["Sx_mm3"]   = ft32mm3(find_val(["STRUCTURAL_SECTION_ELASTIC_MODULUS_STRONG_AXIS"], ["Sx"]))
-        props["J_mm4"]    = ft42mm4(find_val(["STRUCTURAL_SECTION_J"], ["J"]))
+        props["r_mm"]     = ft2mm(find_val([], ["r", "Web Fillet", "Fillet Radius"]))
+        props["Area_mm2"] = sqft2sqmm(find_val(["STRUCTURAL_SECTION_AREA"], ["Section Area", "Area"]))
+        
+        # Calculate section properties manually using extracted geometry
+        d = props["d_mm"]
+        b = props["b_mm"]
+        tf = props["tf_mm"]
+        tw = props["tw_mm"]
+        r = props["r_mm"]
+        
+        if d > 0 and b > 0 and tf > 0 and tw > 0:
+            h_web = d - 2*tf
+            
+            # Area
+            if props["Area_mm2"] <= 0:
+                A_fillets = (4 - math.pi) * r * r if r > 0 else 0.0
+                props["Area_mm2"] = round(2*b*tf + h_web*tw + A_fillets, 2)
+            
+            # Ix
+            Ix = (b * d**3 - (b - tw) * h_web**3) / 12.0
+            props["Ix_mm4"] = round(Ix, 0)
+            
+            # Iy
+            Iy = (2 * tf * b**3 + h_web * tw**3) / 12.0
+            props["Iy_mm4"] = round(Iy, 0)
+            
+            # Elastic modulus
+            if d > 0: props["Sx_mm3"] = round(Ix / (d/2), 0)
+            if b > 0: props["Sy_mm3"] = round(Iy / (b/2), 0)
+            
+            # Plastic modulus
+            props["Zx_mm3"] = round(b*tf*(d-tf) + tw*h_web**2/4, 0)
+            props["Zy_mm3"] = round(b**2*tf/2 + h_web*tw**2/4, 0)
+            
+            # Torsional constant
+            props["J_mm4"] = round((2*b*tf**3 + (d-tf)*tw**3) / 3.0, 0)
+            
+            # Warping constant
+            h0 = d - tf
+            props["Cw_mm6"] = round(Iy * h0**2 / 4.0, 0)
+            
+            # -------------------------------------------------------
+            # SHEAR AREAS (Avz, Avy)
+            # Avz (Strong Axis Shear) ~ d * tw
+            # Avy (Weak Axis Shear) ~ 2 * b * tf
+            # -------------------------------------------------------
+            props["Avz_mm2"] = round(d * tw, 0)
+            props["Avy_mm2"] = round(2 * b * tf, 0)
 
+            # -------------------------------------------------------
+            # RADIUS OF GYRATION (rx, ry)
+            # rx = sqrt(Ix / A)
+            # ry = sqrt(Iy / A)
+            # -------------------------------------------------------
+            if props["Area_mm2"] > 0:
+                props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 1)
+                props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 1)
+            
+            # Set default centroids for symmetric section
+            props["cx_mm"] = round(b / 2.0, 2)
+            props["cy_mm"] = round(d / 2.0, 2)
+
+        # Round all values to integers
         for k in props: 
-            # "buat section properties memiliki angka bulat" -> Round to integer
             if isinstance(props[k], float): 
                 props[k] = int(round(props[k]))
                 
@@ -503,6 +709,130 @@ def get_local_axes(element, doc):
     return local_axes
 
 # ===================================================
+# AISC 360-22 DESIGN PARAMETERS (SRPMK)
+# ===================================================
+
+def calculate_section_classification(section_props, material_props):
+    """
+    Calculate section slenderness (λ) and classify per AISC 360-22 Table B4.1b.
+    For SRPMK: Uses λhd (highly ductile) limits per AISC 341-22.
+    
+    Args:
+        section_props: Dictionary from get_section_properties()
+        material_props: Dictionary from get_material_data()
+    
+    Returns:
+        Dictionary with λ values and classification
+    """
+    # Extract values from existing section properties
+    d = section_props.get("d_mm", 0)
+    b = section_props.get("b_mm", 0)
+    tf = section_props.get("tf_mm", 0)
+    tw = section_props.get("tw_mm", 0)
+    Fy = material_props.get("Fy_MPa", 0)
+    E = material_props.get("E_MPa", 0)
+    
+    # Safety check
+    if tf <= 0 or tw <= 0 or Fy <= 0 or E <= 0:
+        return {
+            "lambda_flange": 0, "lambda_web": 0,
+            "lambda_p_flange": 0, "lambda_r_flange": 0, "lambda_hd_flange": 0,
+            "lambda_p_web": 0, "lambda_r_web": 0, "lambda_hd_web": 0,
+            "flange_class": "unknown", "web_class": "unknown",
+            "srpmk_flange_ok": False, "srpmk_web_ok": False
+        }
+    
+    # Calculate slenderness ratios
+    lambda_flange = (b / 2.0) / tf   # b/(2*tf) for I-section flanges (half-flange width)
+    h_web = d - 2.0 * tf             # Clear web height
+    lambda_web = h_web / tw          # h/tw for webs
+    
+    # AISC 360-22 Table B4.1b limits (flexure) - Case 10 for flanges, Case 15 for webs
+    # λp = compact limit, λr = noncompact limit
+    lambda_p_flange = 0.38 * math.sqrt(E / Fy)   # Compact flange (Case 10)
+    lambda_r_flange = 1.0 * math.sqrt(E / Fy)    # Noncompact flange limit
+    
+    lambda_p_web = 3.76 * math.sqrt(E / Fy)      # Compact web (Case 15)
+    lambda_r_web = 5.70 * math.sqrt(E / Fy)      # Noncompact web limit
+    
+    # AISC 341-22 Table D1.1 - Highly Ductile Members (SRPMK requirement)
+    lambda_hd_flange = 0.30 * math.sqrt(E / Fy)  # Highly ductile flange
+    lambda_hd_web = 2.45 * math.sqrt(E / Fy)     # Highly ductile web (Ca assumed ≈ 0)
+    
+    # Classify per AISC 360-22
+    if lambda_flange <= lambda_p_flange:
+        flange_class = "compact"
+    elif lambda_flange <= lambda_r_flange:
+        flange_class = "noncompact"
+    else:
+        flange_class = "slender"
+    
+    if lambda_web <= lambda_p_web:
+        web_class = "compact"
+    elif lambda_web <= lambda_r_web:
+        web_class = "noncompact"
+    else:
+        web_class = "slender"
+    
+    # SRPMK (Highly Ductile) check per AISC 341-22
+    flange_srpmk_ok = lambda_flange <= lambda_hd_flange
+    web_srpmk_ok = lambda_web <= lambda_hd_web
+    
+    return {
+        "lambda_flange": round(lambda_flange, 2),
+        "lambda_web": round(lambda_web, 2),
+        "lambda_p_flange": round(lambda_p_flange, 2),
+        "lambda_r_flange": round(lambda_r_flange, 2),
+        "lambda_hd_flange": round(lambda_hd_flange, 2),
+        "lambda_p_web": round(lambda_p_web, 2),
+        "lambda_r_web": round(lambda_r_web, 2),
+        "lambda_hd_web": round(lambda_hd_web, 2),
+        "flange_class": flange_class,
+        "web_class": web_class,
+        "srpmk_flange_ok": flange_srpmk_ok,
+        "srpmk_web_ok": web_srpmk_ok
+    }
+
+
+def get_design_parameters(element_type, topology):
+    """
+    Generate design parameters for AISC 360-22 checks.
+    SRPMK Fixed-Fixed assumptions: K=0.65 (theoretical 0.5, practical 0.65).
+    
+    Args:
+        element_type: "Column" or "Beam"
+        topology: Dictionary from get_topology_ref()
+    
+    Returns:
+        Dictionary with K factors, unbraced lengths, Cb
+    """
+    length_mm = topology.get("length_mm", 0)
+    
+    # SRPMK Fixed-Fixed assumption (moment frame with rigid connections)
+    # Theoretical K=0.5, practical K=0.65 (accounts for imperfect fixity)
+    # For sidesway inhibited (braced) frames with fixed ends
+    Kx = 0.65  # Strong-axis (typically braced by diaphragm)
+    Ky = 0.65  # Weak-axis (fixed-fixed assumption)
+    
+    # Unbraced lengths - conservative (full member length)
+    # Can be refined based on lateral bracing points
+    Lx_mm = length_mm  # Strong-axis unbraced length
+    Ly_mm = length_mm  # Weak-axis unbraced length
+    Lb_mm = length_mm  # Lateral-torsional buckling length (beam)
+    
+    return {
+        "Kx": Kx,
+        "Ky": Ky,
+        "Lx_mm": Lx_mm,
+        "Ly_mm": Ly_mm,
+        "Lb_mm": Lb_mm,
+        "Cb": 1.0,  # Conservative per user request
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+    }
+
+
+# ===================================================
 # ELEMENT DATA
 # ===================================================
 
@@ -517,22 +847,32 @@ def get_element_data(element, doc):
         try: full_display_name = element.Name # Fallback
         except: pass
 
-    # 2. Susun Dictionary Data
+    # 2. Deteksi Type berdasarkan Category ID
+    elem_type_str = "Column" if element.Category.Id.IntegerValue == int(BuiltInCategory.OST_StructuralColumns) else "Beam"
+    
+    # 3. Get existing properties
+    section_props = get_section_properties(element, doc)
+    material_props = get_material_data(element, doc)
+    topology_data = get_topology_ref(element, doc)
+    
+    # 4. Susun Dictionary Data
     data = {
         "id": element.Id.IntegerValue,
-        # Deteksi Type berdasarkan Category ID
-        "type": "Column" if element.Category.Id.IntegerValue == int(BuiltInCategory.OST_StructuralColumns) else "Beam",
-        
-        # --- UPDATE DISINI ---
+        "type": elem_type_str,
         "family": full_display_name, 
+        "section": section_props,
+        "material": material_props,
+        "topology": topology_data,
+        "local_axes": get_local_axes(element, doc),
         
-        "section": get_section_properties(element, doc),
-        "material": get_material_data(element, doc),
-        "topology": get_topology_ref(element, doc),
-        "local_axes": get_local_axes(element, doc)  # NEW: Local coordinate system
+        # NEW: AISC 360-22 Design Parameters (SRPMK)
+        "design_parameters": get_design_parameters(elem_type_str, topology_data),
+        
+        # NEW: Section Classification per AISC 360-22 & AISC 341-22
+        "section_classification": calculate_section_classification(section_props, material_props)
     }
     
-    # 3. Hitung Beban (Khusus Beam)
+    # 5. Hitung Beban (Khusus Beam)
     # Pastikan topology sudah Integer (hasil revisi sebelumnya)
     if data["type"] == "Beam":
         start = data["topology"]["start_node"] 
@@ -1392,50 +1732,54 @@ if json_success:
                                             # --- AMBIL DATA DATA ---
                                             elem_name = "{} : {}".format(el.Symbol.FamilyName, el.Name)
                                             
-                                            # SAP2000 Style Outputs (Keys from Analysis.py: P, V2, V3, T, M2, M3)
-                                            # P (Axial Force)
-                                            # V2 (Shear Force - Local Y direction)
-                                            # V3 (Shear Force - Local Z direction)
-                                            # T (Torsional Moment)
-                                            # M2 (Bending Moment about Local Y)
-                                            # M3 (Bending Moment about Local Z)
+                                            # NEW: Multi-Station Support (SAP2000 Diagram Style)
+                                            # Read stations array from JSON (adaptive stationing)
+                                            stations = val.get('stations', [])
                                             
-                                            p_val = val.get('P', 0.0)
-                                            v2_val = val.get('V2', 0.0)
-                                            v3_val = val.get('V3', 0.0)
-                                            t_val = val.get('T', 0.0)
-                                            m2_val = val.get('M2', 0.0)
-                                            m3_val = val.get('M3', 0.0)
-
-                                            # --- UPDATE STATISTIK MAKSIMUM & MINIMUM ---
-                                            id_display = "[{}] {}".format(eid, elem_name)
-                                            current_vals = {
-                                                "p": p_val, "t": t_val, "v2": v2_val, 
-                                                "v3": v3_val, "m2": m2_val, "m3": m3_val
-                                            }
+                                            if not stations:
+                                                # Fallback: No stations data (old format or error)
+                                                continue
                                             
-                                            for k in components:
-                                                val = current_vals[k]
-                                                # Update Max
-                                                if val > stats[k]["max"]:
-                                                    stats[k]["max"] = val
-                                                    stats[k]["max_id"] = id_display
-                                                # Update Min
-                                                if val < stats[k]["min"]:
-                                                    stats[k]["min"] = val
-                                                    stats[k]["min_id"] = id_display
+                                            # Process each station
+                                            for station_data in stations:
+                                                station_loc = station_data.get('station', 0.0)
+                                                p_val = station_data.get('P', 0.0)
+                                                v2_val = station_data.get('V2', 0.0)
+                                                v3_val = station_data.get('V3', 0.0)
+                                                t_val = station_data.get('T', 0.0)
+                                                m2_val = station_data.get('M2', 0.0)
+                                                m3_val = station_data.get('M3', 0.0)
 
-                                            # --- MASUKKAN KE LIST TABEL ---
-                                            data_elem.append([
-                                                str(eid),
-                                                elem_name,
-                                                round(p_val, 2),
-                                                round(v2_val, 2),
-                                                round(v3_val, 2),
-                                                round(t_val, 2),
-                                                round(m2_val, 2),
-                                                round(m3_val, 2)
-                                            ])
+                                                # --- UPDATE STATISTIK MAKSIMUM & MINIMUM ---
+                                                id_display = "[{}] {}".format(eid, elem_name)
+                                                current_vals = {
+                                                    "p": p_val, "v2": v2_val, "v3": v3_val, 
+                                                    "t": t_val, "m2": m2_val, "m3": m3_val
+                                                }
+                                                
+                                                for k in components:
+                                                    val_comp = current_vals[k]
+                                                    # Update Max
+                                                    if val_comp > stats[k]["max"]:
+                                                        stats[k]["max"] = val_comp
+                                                        stats[k]["max_id"] = id_display
+                                                    # Update Min
+                                                    if val_comp < stats[k]["min"]:
+                                                        stats[k]["min"] = val_comp
+                                                        stats[k]["min_id"] = id_display
+
+                                                # --- MASUKKAN KE LIST TABEL ---
+                                                data_elem.append([
+                                                    str(eid),
+                                                    elem_name,
+                                                    "{:.2f}".format(station_loc),  # Station location
+                                                    round(p_val, 2),
+                                                    round(v2_val, 2),
+                                                    round(v3_val, 2),
+                                                    round(t_val, 2),
+                                                    round(m2_val, 2),
+                                                    round(m3_val, 2)
+                                                ])
                                         
                                         except Exception as e_inner:
                                             # Jika terjadi error konversi ID (misal ID string aneh), skip saja
@@ -1449,7 +1793,7 @@ if json_success:
                                         print_center_table(
                                             output=out,
                                             data=data_elem,
-                                            columns=["ID", "Family & Type", "P (N)", "V2 (N)", "V3 (N)", "T (Nmm)", "M2 (Nmm)", "M3 (Nmm)"],
+                                            columns=["ID", "Family & Type", "Station", "P (N)", "V2 (N)", "V3 (N)", "T (Nmm)", "M2 (Nmm)", "M3 (Nmm)"],
                                             title="Detail Gaya Dalam Elemen Asli ({})".format(case_key)
                                         )
                                     else:
@@ -1472,11 +1816,14 @@ if json_success:
                                         min_v = stats[k]["min"]
                                         if min_v > 1.0e19: min_v = 0.0
                                         
+                                        # Tentukan satuan: N untuk gaya, Nmm untuk momen/torsi
+                                        unit = "N" if k in ["p", "v2", "v3"] else "Nmm"
+                                        
                                         summary_rows.append([
                                             labels[k],
-                                            "{} Nmm".format(round(max_v, 2)), 
+                                            "{} {}".format(round(max_v, 2), unit), 
                                             stats[k]["max_id"],
-                                            "{} Nmm".format(round(min_v, 2)), 
+                                            "{} {}".format(round(min_v, 2), unit), 
                                             stats[k]["min_id"]
                                         ])
                                     
