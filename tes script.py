@@ -709,6 +709,130 @@ def get_local_axes(element, doc):
     return local_axes
 
 # ===================================================
+# AISC 360-22 DESIGN PARAMETERS (SRPMK)
+# ===================================================
+
+def calculate_section_classification(section_props, material_props):
+    """
+    Calculate section slenderness (λ) and classify per AISC 360-22 Table B4.1b.
+    For SRPMK: Uses λhd (highly ductile) limits per AISC 341-22.
+    
+    Args:
+        section_props: Dictionary from get_section_properties()
+        material_props: Dictionary from get_material_data()
+    
+    Returns:
+        Dictionary with λ values and classification
+    """
+    # Extract values from existing section properties
+    d = section_props.get("d_mm", 0)
+    b = section_props.get("b_mm", 0)
+    tf = section_props.get("tf_mm", 0)
+    tw = section_props.get("tw_mm", 0)
+    Fy = material_props.get("Fy_MPa", 0)
+    E = material_props.get("E_MPa", 0)
+    
+    # Safety check
+    if tf <= 0 or tw <= 0 or Fy <= 0 or E <= 0:
+        return {
+            "lambda_flange": 0, "lambda_web": 0,
+            "lambda_p_flange": 0, "lambda_r_flange": 0, "lambda_hd_flange": 0,
+            "lambda_p_web": 0, "lambda_r_web": 0, "lambda_hd_web": 0,
+            "flange_class": "unknown", "web_class": "unknown",
+            "srpmk_flange_ok": False, "srpmk_web_ok": False
+        }
+    
+    # Calculate slenderness ratios
+    lambda_flange = (b / 2.0) / tf   # b/(2*tf) for I-section flanges (half-flange width)
+    h_web = d - 2.0 * tf             # Clear web height
+    lambda_web = h_web / tw          # h/tw for webs
+    
+    # AISC 360-22 Table B4.1b limits (flexure) - Case 10 for flanges, Case 15 for webs
+    # λp = compact limit, λr = noncompact limit
+    lambda_p_flange = 0.38 * math.sqrt(E / Fy)   # Compact flange (Case 10)
+    lambda_r_flange = 1.0 * math.sqrt(E / Fy)    # Noncompact flange limit
+    
+    lambda_p_web = 3.76 * math.sqrt(E / Fy)      # Compact web (Case 15)
+    lambda_r_web = 5.70 * math.sqrt(E / Fy)      # Noncompact web limit
+    
+    # AISC 341-22 Table D1.1 - Highly Ductile Members (SRPMK requirement)
+    lambda_hd_flange = 0.30 * math.sqrt(E / Fy)  # Highly ductile flange
+    lambda_hd_web = 2.45 * math.sqrt(E / Fy)     # Highly ductile web (Ca assumed ≈ 0)
+    
+    # Classify per AISC 360-22
+    if lambda_flange <= lambda_p_flange:
+        flange_class = "compact"
+    elif lambda_flange <= lambda_r_flange:
+        flange_class = "noncompact"
+    else:
+        flange_class = "slender"
+    
+    if lambda_web <= lambda_p_web:
+        web_class = "compact"
+    elif lambda_web <= lambda_r_web:
+        web_class = "noncompact"
+    else:
+        web_class = "slender"
+    
+    # SRPMK (Highly Ductile) check per AISC 341-22
+    flange_srpmk_ok = lambda_flange <= lambda_hd_flange
+    web_srpmk_ok = lambda_web <= lambda_hd_web
+    
+    return {
+        "lambda_flange": round(lambda_flange, 2),
+        "lambda_web": round(lambda_web, 2),
+        "lambda_p_flange": round(lambda_p_flange, 2),
+        "lambda_r_flange": round(lambda_r_flange, 2),
+        "lambda_hd_flange": round(lambda_hd_flange, 2),
+        "lambda_p_web": round(lambda_p_web, 2),
+        "lambda_r_web": round(lambda_r_web, 2),
+        "lambda_hd_web": round(lambda_hd_web, 2),
+        "flange_class": flange_class,
+        "web_class": web_class,
+        "srpmk_flange_ok": flange_srpmk_ok,
+        "srpmk_web_ok": web_srpmk_ok
+    }
+
+
+def get_design_parameters(element_type, topology):
+    """
+    Generate design parameters for AISC 360-22 checks.
+    SRPMK Fixed-Fixed assumptions: K=0.65 (theoretical 0.5, practical 0.65).
+    
+    Args:
+        element_type: "Column" or "Beam"
+        topology: Dictionary from get_topology_ref()
+    
+    Returns:
+        Dictionary with K factors, unbraced lengths, Cb
+    """
+    length_mm = topology.get("length_mm", 0)
+    
+    # SRPMK Fixed-Fixed assumption (moment frame with rigid connections)
+    # Theoretical K=0.5, practical K=0.65 (accounts for imperfect fixity)
+    # For sidesway inhibited (braced) frames with fixed ends
+    Kx = 0.65  # Strong-axis (typically braced by diaphragm)
+    Ky = 0.65  # Weak-axis (fixed-fixed assumption)
+    
+    # Unbraced lengths - conservative (full member length)
+    # Can be refined based on lateral bracing points
+    Lx_mm = length_mm  # Strong-axis unbraced length
+    Ly_mm = length_mm  # Weak-axis unbraced length
+    Lb_mm = length_mm  # Lateral-torsional buckling length (beam)
+    
+    return {
+        "Kx": Kx,
+        "Ky": Ky,
+        "Lx_mm": Lx_mm,
+        "Ly_mm": Ly_mm,
+        "Lb_mm": Lb_mm,
+        "Cb": 1.0,  # Conservative per user request
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+    }
+
+
+# ===================================================
 # ELEMENT DATA
 # ===================================================
 
@@ -723,22 +847,32 @@ def get_element_data(element, doc):
         try: full_display_name = element.Name # Fallback
         except: pass
 
-    # 2. Susun Dictionary Data
+    # 2. Deteksi Type berdasarkan Category ID
+    elem_type_str = "Column" if element.Category.Id.IntegerValue == int(BuiltInCategory.OST_StructuralColumns) else "Beam"
+    
+    # 3. Get existing properties
+    section_props = get_section_properties(element, doc)
+    material_props = get_material_data(element, doc)
+    topology_data = get_topology_ref(element, doc)
+    
+    # 4. Susun Dictionary Data
     data = {
         "id": element.Id.IntegerValue,
-        # Deteksi Type berdasarkan Category ID
-        "type": "Column" if element.Category.Id.IntegerValue == int(BuiltInCategory.OST_StructuralColumns) else "Beam",
-        
-        # --- UPDATE DISINI ---
+        "type": elem_type_str,
         "family": full_display_name, 
+        "section": section_props,
+        "material": material_props,
+        "topology": topology_data,
+        "local_axes": get_local_axes(element, doc),
         
-        "section": get_section_properties(element, doc),
-        "material": get_material_data(element, doc),
-        "topology": get_topology_ref(element, doc),
-        "local_axes": get_local_axes(element, doc)  # NEW: Local coordinate system
+        # NEW: AISC 360-22 Design Parameters (SRPMK)
+        "design_parameters": get_design_parameters(elem_type_str, topology_data),
+        
+        # NEW: Section Classification per AISC 360-22 & AISC 341-22
+        "section_classification": calculate_section_classification(section_props, material_props)
     }
     
-    # 3. Hitung Beban (Khusus Beam)
+    # 5. Hitung Beban (Khusus Beam)
     # Pastikan topology sudah Integer (hasil revisi sebelumnya)
     if data["type"] == "Beam":
         start = data["topology"]["start_node"] 
