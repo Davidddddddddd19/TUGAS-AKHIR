@@ -410,6 +410,214 @@ def run_load_case(data, case_type):
                     unique.append(s)
             return unique
 
+        def get_deflection_at_station(elem_id, ratio, local_axes, node_coords_dict, start_node, end_node, length_mm, E, I_major, I_minor, A, G):
+            """
+            Calculate deflection at any station along element using Timoshenko beam shape functions.
+            
+            For Timoshenko beam, deflection considers both bending and shear deformations.
+            Uses cubic Hermite interpolation enhanced with shear correction.
+            
+            Args:
+                elem_id: Element ID
+                ratio: Station ratio (0.0 to 1.0)
+                local_axes: Local coordinate system
+                node_coords_dict: Dictionary of node coordinates
+                start_node, end_node: Node IDs
+                length_mm: Element length
+                E, I_major, I_minor, A, G: Section/material properties
+                
+            Returns:
+                Dictionary with local deflections {delta_y, delta_z}
+            """
+            # Get displacements at start and end nodes
+            d_start = ops.nodeDisp(start_node)  # [dx, dy, dz, rx, ry, rz] global
+            d_end = ops.nodeDisp(end_node)      # [dx, dy, dz, rx, ry, rz] global
+            
+            # Extract translation and rotation components
+            u1 = [d_start[0], d_start[1], d_start[2]]  # Start translation (global)
+            u2 = [d_end[0], d_end[1], d_end[2]]        # End translation (global)
+            theta1 = [d_start[3], d_start[4], d_start[5]]  # Start rotation (global)
+            theta2 = [d_end[3], d_end[4], d_end[5]]        # End rotation (global)
+            
+            # Transform to local coordinates
+            x_axis = local_axes.get('x_axis', [1, 0, 0])
+            y_axis = local_axes.get('y_axis', [0, 1, 0])
+            z_axis = local_axes.get('z_axis', [0, 0, 1])
+            
+            # Rotation matrix (global to local)
+            R = [
+                [x_axis[0], x_axis[1], x_axis[2]],
+                [y_axis[0], y_axis[1], y_axis[2]],
+                [z_axis[0], z_axis[1], z_axis[2]]
+            ]
+            
+            def transform_vec(v):
+                return [
+                    R[0][0]*v[0] + R[0][1]*v[1] + R[0][2]*v[2],
+                    R[1][0]*v[0] + R[1][1]*v[1] + R[1][2]*v[2],
+                    R[2][0]*v[0] + R[2][1]*v[1] + R[2][2]*v[2]
+                ]
+            
+            u1_local = transform_vec(u1)
+            u2_local = transform_vec(u2)
+            theta1_local = transform_vec(theta1)
+            theta2_local = transform_vec(theta2)
+            
+            # Timoshenko beam shape functions for transverse deflection
+            # v(x) = N1*v1 + N2*theta1 + N3*v2 + N4*theta2
+            # Where N1, N2, N3, N4 are Hermite cubic shape functions with shear correction
+            
+            L = length_mm
+            xi = ratio  # 0 to 1
+            
+            # Standard Hermite shape functions (Euler-Bernoulli base)
+            N1 = 1 - 3*xi**2 + 2*xi**3
+            N2 = L * (xi - 2*xi**2 + xi**3)
+            N3 = 3*xi**2 - 2*xi**3
+            N4 = L * (-xi**2 + xi**3)
+            
+            # Timoshenko shear correction factor (phi = 12*E*I / (G*A_s*L^2))
+            # For simplicity, using approximate shear area A_s ≈ A * 0.85 for I-section
+            A_s = A * 0.85 if A > 0 else 1.0
+            
+            # Calculate phi for each direction
+            phi_y = 12 * E * I_major / (G * A_s * L**2) if (G * A_s * L**2) > 0 else 0
+            phi_z = 12 * E * I_minor / (G * A_s * L**2) if (G * A_s * L**2) > 0 else 0
+            
+            # Modified shape functions for Timoshenko beam (simplified)
+            # The effect of shear is typically small for slender beams
+            # For practical purposes, use Euler-Bernoulli with slight adjustment
+            shear_factor_y = 1 / (1 + phi_y) if phi_y < 10 else 0.1
+            shear_factor_z = 1 / (1 + phi_z) if phi_z < 10 else 0.1
+            
+            # Deflection in local Y direction (v1=u1_local[1], theta1=theta1_local[2] for rotation about Z)
+            # For beam: Y is transverse (vertical), rotation about Z causes Y deflection
+            v1_y = u1_local[1]
+            v2_y = u2_local[1]
+            theta1_z = theta1_local[2]  # Rotation about local Z
+            theta2_z = theta2_local[2]
+            
+            delta_y = (N1 * v1_y + N2 * theta1_z + N3 * v2_y + N4 * theta2_z) * shear_factor_y
+            
+            # Deflection in local Z direction (w1=u1_local[2], theta1=theta1_local[1] for rotation about Y)
+            v1_z = u1_local[2]
+            v2_z = u2_local[2]
+            theta1_y = -theta1_local[1]  # Rotation about local Y (sign convention)
+            theta2_y = -theta2_local[1]
+            
+            delta_z = (N1 * v1_z + N2 * theta1_y + N3 * v2_z + N4 * theta2_y) * shear_factor_z
+            
+            return {"delta_y": delta_y, "delta_z": delta_z}
+
+        def get_max_deflection(item, node_coords_dict, sub_elements_map):
+            """
+            Calculate maximum deflection for an element with 9-point sampling.
+            Uses Timoshenko beam shape functions for interpolation.
+            
+            Returns:
+                Dictionary with max deflection info:
+                {
+                    "delta_y_max_mm": signed max deflection in local Y,
+                    "delta_y_station": station ratio where max occurs,
+                    "delta_y_distance_mm": distance where max occurs,
+                    "delta_z_max_mm": signed max deflection in local Z,
+                    "delta_z_station": station ratio where max occurs,
+                    "delta_z_distance_mm": distance where max occurs
+                }
+            """
+            eid = item['id']
+            raw = item['raw']
+            local_axes = raw.get('local_axes', {})
+            length_mm = raw.get('topology', {}).get('length_mm', 0)
+            sec = raw.get('section', {})
+            mat = raw.get('material', {})
+            
+            # Material properties
+            E = float(mat.get('E_MPa', 205000))
+            G = float(mat.get('G_MPa', 80000))
+            
+            # Section properties
+            A = float(sec.get('Area_mm2', 0))
+            I_major = float(sec.get('Ix_mm4', 0))  # Strong axis
+            I_minor = float(sec.get('Iy_mm4', 0))  # Weak axis
+            
+            if length_mm <= 0:
+                return None
+                
+            # Get nodes for this element
+            subs = sub_elements_map.get(eid)
+            
+            # 9-point sampling (every 0.125)
+            sample_ratios = [i * 0.125 for i in range(9)]  # 0, 0.125, 0.25, ..., 1.0
+            
+            deflection_samples = []
+            
+            if not subs:
+                # Single element - use original nodes
+                n1, n2 = item['nodes']
+                for ratio in sample_ratios:
+                    defl = get_deflection_at_station(
+                        eid, ratio, local_axes, node_coords_dict, n1, n2,
+                        length_mm, E, I_major, I_minor, A, G
+                    )
+                    deflection_samples.append({
+                        "station": ratio,
+                        "distance_mm": ratio * length_mm,
+                        "delta_y": defl["delta_y"],
+                        "delta_z": defl["delta_z"]
+                    })
+            else:
+                # Multiple sub-elements - sample across all
+                cumulative_len = 0.0
+                total_len = length_mm
+                
+                for ratio in sample_ratios:
+                    target_dist = ratio * total_len
+                    
+                    # Find which sub-element contains this point
+                    cum = 0.0
+                    for i, (sub_eid, sub_len) in enumerate(subs):
+                        if cum <= target_dist <= cum + sub_len + 1e-6:
+                            # Found the segment
+                            local_ratio = (target_dist - cum) / sub_len if sub_len > 0 else 0
+                            local_ratio = max(0.0, min(1.0, local_ratio))  # Clamp
+                            
+                            # Get nodes for this sub-element
+                            try:
+                                nodes = ops.eleNodes(sub_eid)
+                                n1, n2 = nodes[0], nodes[1]
+                                
+                                defl = get_deflection_at_station(
+                                    sub_eid, local_ratio, local_axes, node_coords_dict,
+                                    n1, n2, sub_len, E, I_major, I_minor, A, G
+                                )
+                                deflection_samples.append({
+                                    "station": ratio,
+                                    "distance_mm": target_dist,
+                                    "delta_y": defl["delta_y"],
+                                    "delta_z": defl["delta_z"]
+                                })
+                            except:
+                                pass
+                            break
+                        cum += sub_len
+            
+            if not deflection_samples:
+                return None
+            
+            # Find max absolute deflection (but keep sign)
+            max_y_sample = max(deflection_samples, key=lambda x: abs(x["delta_y"]))
+            max_z_sample = max(deflection_samples, key=lambda x: abs(x["delta_z"]))
+            
+            return {
+                "delta_y_max_mm": round(max_y_sample["delta_y"], 4),
+                "delta_y_station": round(max_y_sample["station"], 4),
+                "delta_y_distance_mm": round(max_y_sample["distance_mm"], 2),
+                "delta_z_max_mm": round(max_z_sample["delta_z"], 4),
+                "delta_z_station": round(max_z_sample["station"], 4),
+                "delta_z_distance_mm": round(max_z_sample["distance_mm"], 2)
+            }
+
 
         # --- RESET MODEL ---
         ops.wipe()
@@ -828,10 +1036,14 @@ def run_load_case(data, case_type):
                                   "M3": round(forces["M3"], 2)
                               })
                           
+                          # Calculate max deflection for this element
+                          max_defl = get_max_deflection(item, node_coords, sub_elements_map)
+                          
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
                                "applied_load": item.get('applied_load', ''),
                                "element_length_mm": element_length,
+                               "max_deflection": max_defl,
                                "stations": stations_output
                             }
                     else:
@@ -879,10 +1091,14 @@ def run_load_case(data, case_type):
                                     
                                 cumulative_dist += sub_len
                           
+                          # Calculate max deflection for this element
+                          max_defl = get_max_deflection(item, node_coords, sub_elements_map)
+                          
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
                                "applied_load": item.get('applied_load', ''),
                                "element_length_mm": element_length,
+                               "max_deflection": max_defl,
                                "stations": stations_output
                             }
                 except Exception:
