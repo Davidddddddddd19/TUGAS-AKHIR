@@ -1834,6 +1834,71 @@ if json_success:
                                         title="📊 Ringkasan Analisis ({})".format(case_key)
                                     )
 
+                                    # ===========================================================
+                                    # D. TABEL DEFLEKSI MAKSIMUM (NEW)
+                                    # ===========================================================
+                                    deflection_data = []
+                                    
+                                    if 'elements' in results:
+                                        for eid, val in results['elements'].items():
+                                            try:
+                                                revit_id_int = int(eid)
+                                                revit_el_id = ElementId(revit_id_int)
+                                                el = doc.GetElement(revit_el_id)
+                                                
+                                                if not el:
+                                                    continue
+                                                
+                                                cat_id = el.Category.Id.IntegerValue
+                                                if cat_id not in [int(BuiltInCategory.OST_StructuralColumns), 
+                                                                  int(BuiltInCategory.OST_StructuralFraming)]:
+                                                    continue
+                                                
+                                                elem_type = val.get('element_type', 'Unknown')
+                                                elem_name_short = el.Name
+                                                
+                                                # Get max_deflection data
+                                                max_defl = val.get('max_deflection', None)
+                                                if max_defl:
+                                                    dy_max = max_defl.get('delta_y_max_mm', 0.0)
+                                                    dy_station = max_defl.get('delta_y_station', 0.0)
+                                                    dy_dist = max_defl.get('delta_y_distance_mm', 0.0)
+                                                    dz_max = max_defl.get('delta_z_max_mm', 0.0)
+                                                    dz_station = max_defl.get('delta_z_station', 0.0)
+                                                    dz_dist = max_defl.get('delta_z_distance_mm', 0.0)
+                                                    
+                                                    deflection_data.append([
+                                                        str(eid),
+                                                        elem_type,
+                                                        elem_name_short,
+                                                        "{:.4f}".format(dy_max),
+                                                        "{:.3f}".format(dy_station),
+                                                        "{:.0f}".format(dy_dist),
+                                                        "{:.4f}".format(dz_max),
+                                                        "{:.3f}".format(dz_station),
+                                                        "{:.0f}".format(dz_dist)
+                                                    ])
+                                            except Exception:
+                                                continue
+                                    
+                                    if deflection_data:
+                                        deflection_data.sort(key=lambda x: int(x[0]))
+                                        print_center_table(
+                                            output=out,
+                                            data=deflection_data,
+                                            columns=["ID", "Type", "Section", "δy Max (mm)", "Station Y", "Dist Y (mm)", "δz Max (mm)", "Station Z", "Dist Z (mm)"],
+                                            title="📐 Defleksi Maksimum Elemen ({})".format(case_key)
+                                        )
+                                        
+                                        # Find overall max deflection
+                                        max_dy_elem = max(deflection_data, key=lambda x: abs(float(x[3])))
+                                        max_dz_elem = max(deflection_data, key=lambda x: abs(float(x[6])))
+                                        out.print_md("**Defleksi Maksimum Overall:**")
+                                        out.print_md("  - **δy max:** {} mm @ ID {} (station {}, dist {} mm)".format(
+                                            max_dy_elem[3], max_dy_elem[0], max_dy_elem[4], max_dy_elem[5]))
+                                        out.print_md("  - **δz max:** {} mm @ ID {} (station {}, dist {} mm)".format(
+                                            max_dz_elem[6], max_dz_elem[0], max_dz_elem[7], max_dz_elem[8]))
+
                             else:
                                 out.print_md("❌ **Analisis Gagal**")
                                 out.print_md("**Pesan:** " + str(results.get("message", "Unknown Error")))
