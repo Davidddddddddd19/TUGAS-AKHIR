@@ -7,8 +7,9 @@ import openseespy.opensees as ops
 # 1. KONFIGURASI FISIKA
 # ============================================================================
 G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
-# SAP2000 uses factor 1.0 for all load cases
-FACTOR_SW = 1.078         # Calibrated to match SAP2000 F3 (5274.88/4893.32)
+# SAP2000 comparison notes: Without calibration factor, expect ~7% lower F3 and ~5% higher M2
+# This is due to differences in element formulation between OpenSeesPy and SAP2000
+FACTOR_SW = 1.0           # No calibration - balanced deviation on F3 and M2
 CONN_STIFFNESS_FACTOR_WEAK = 1.0   # No adjustment - investigate root cause first
 CONN_STIFFNESS_FACTOR_STRONG = 1.0 # No adjustment - investigate root cause first
 TOLERANCE_COORD = 1.0     # Toleransi (mm)
@@ -117,7 +118,61 @@ def apply_element_loads(element_data, case_type):
     return result
 
 # ============================================================================
+# HELPER: Equivalent Nodal Loads for Symmetric Triangular Distribution
+# ============================================================================
+def compute_triangular_equivalent_loads(L, q_peak):
+    """
+    Compute equivalent nodal loads for a symmetric triangular load distribution.
+    Load shape: 0 -> q_peak (at L/2) -> 0
+    
+    Uses exact fixed-end beam formulas for symmetric triangular load.
+    
+    For symmetric triangular load (peak at center):
+    - Total Load W = q_peak * L / 2
+    - Shear at each end: V = W/2 = q_peak * L / 4
+    - Fixed-end moment at each end: M = q_peak * L^2 / 12
+    
+    Args:
+        L: Beam length (mm)
+        q_peak: Peak load intensity at midspan (N/mm)
+    
+    Returns:
+        dict with:
+            'R_start': Reaction force at start (N)
+            'R_end': Reaction force at end (N)  
+            'M_start': Fixed-end moment at start (N-mm)
+            'M_end': Fixed-end moment at end (N-mm)
+            'total_load': Total equivalent load (N)
+    """
+    # Total load = Area under triangle = (1/2) * base * height
+    # For symmetric triangle 0->peak->0: Total = q_peak * L / 2
+    W_total = q_peak * L / 2.0
+    
+    # For symmetric distribution, reactions are equal
+    R_start = W_total / 2.0
+    R_end = W_total / 2.0
+    
+    # Fixed-end moments for symmetric triangular load (peak at center)
+    # Formula: M = q_peak * L^2 / 12 (derived from beam theory)
+    # Sign: Positive moment creates compression on top (sagging)
+    # At fixed ends: moment opposes rotation, so:
+    # M_start = -q_peak * L^2 / 12 (counterclockwise at left end)
+    # M_end = +q_peak * L^2 / 12 (clockwise at right end)
+    M_fem = q_peak * L * L / 12.0
+    M_start = -M_fem  # Counteracts sagging at left
+    M_end = M_fem     # Counteracts sagging at right
+    
+    return {
+        'R_start': R_start,
+        'R_end': R_end,
+        'M_start': M_start,
+        'M_end': M_end,
+        'total_load': W_total
+    }
+
+# ============================================================================
 # 2. FUNGSI ANALISIS PER KASUS BEBAN (CORE LOGIC)
+
 # ============================================================================
 def run_load_case(data, case_type):
     """
@@ -702,8 +757,9 @@ def run_load_case(data, case_type):
             
             # Use Element ID as unique Transform Tag
             transf_tag = item['id']
-            # Use PDelta for combination loads to capture second-order effects
-            if item['is_vertical']:
+            # Use PDelta only for COMB loads to capture second-order effects
+            # For SW (selfweight) use Linear to match SAP2000 behavior
+            if item['is_vertical'] and case_type == 'COMB':
                 ops.geomTransf('PDelta', transf_tag, vec_z[0], vec_z[1], vec_z[2])
             else:
                 ops.geomTransf('Linear', transf_tag, vec_z[0], vec_z[1], vec_z[2])
@@ -712,9 +768,10 @@ def run_load_case(data, case_type):
             G = float(mat.get('G_MPa', 80000))
             A, J, Ix, Iy, Avy, Avz = get_section_properties(sec)
             
-            # Apply Selective Stiffness Correction for Columns
-            # Strong axis (Ix) controls M3, Weak axis (Iy) controls V3
-            if item['is_vertical']:
+            # Apply Selective Stiffness Correction for Columns (COMB only)
+            # This adjustment is for combined load cases to match SAP2000 frame behavior
+            # For individual load cases (SW, LL), use full stiffness for accurate comparison
+            if item['is_vertical'] and case_type == 'COMB':
                  Ix *= CONN_STIFFNESS_FACTOR_STRONG  # Reduce to lower M3
                  Iy *= CONN_STIFFNESS_FACTOR_WEAK    # Increase to raise V3
                  J *= CONN_STIFFNESS_FACTOR_WEAK
@@ -757,8 +814,9 @@ def run_load_case(data, case_type):
                 sub_elements_map[item['id']] = [(item['id'], item['length'])]
                 
             else:
-                # --- BALOK (SUBDIVIDED INTO 4 SEGMENTS) ---
+                # --- BALOK (SUBDIVIDED INTO 8 SEGMENTS) ---
                 # Beam mapping identical to column now (Ops_Iy=Ix, Ops_Iz=Iy) due to consistent local axes
+                # More segments = better accuracy for triangular loads
                 
                 n_start = item['nodes'][0]
                 n_end = item['nodes'][1]
@@ -769,7 +827,7 @@ def run_load_case(data, case_type):
                 vy = coord_end[1] - coord_start[1]
                 vz = coord_end[2] - coord_start[2]
                 
-                num_subs = 4
+                num_subs = 8
                 sub_ids = []
                 
                 prev_node = n_start
@@ -870,6 +928,7 @@ def run_load_case(data, case_type):
                                     # Calculate avg q for this segment
                                     x_start_rel = k / num_subs
                                     x_end_rel = (k + 1) / num_subs
+                                    x_mid_rel = (x_start_rel + x_end_rel) / 2.0
                                     
                                     if load_shape == 'Triangle':
                                         # Symmetric Triangle: 0 -> Peak -> 0
@@ -877,28 +936,25 @@ def run_load_case(data, case_type):
                                         q_peak = w_end
                                         
                                         # Helper function for Triangle shape (0 at ends, 1 at 0.5)
-                                        # Ensure floating point symmetry
                                         def get_tri_q(x):
                                             if abs(x - 0.5) < 1e-9: return q_peak
                                             if x < 0.5: return q_peak * (x / 0.5)
                                             else: return q_peak * ((1.0 - x) / 0.5)
                                             
-                                        # Force symmetry for start/end if they are symmetric
-                                        # But segments are sequential 0->0.25, 0.25->0.5, etc.
                                         q_start_val = get_tri_q(x_start_rel)
+                                        q_mid_val = get_tri_q(x_mid_rel)
                                         q_end_val = get_tri_q(x_end_rel)
                                         
-                                        # Verify if we are at the exact center (0.5), force Peak Match
-                                        if abs(x_end_rel - 0.5) < 1e-9: q_end_val = q_peak
-                                        if abs(x_start_rel - 0.5) < 1e-9: q_start_val = q_peak
+                                        # Simpson's Rule for integration: (h/6)*(f(a) + 4*f(mid) + f(b))
+                                        # For average value: integral/length = (f(a) + 4*f(mid) + f(b))/6
+                                        q_seg_avg = (q_start_val + 4.0 * q_mid_val + q_end_val) / 6.0
+                                        
                                     # Linear/Uniform: Start -> End
                                     else:
                                         q_start_val = w_start + (w_end - w_start) * x_start_rel
                                         q_end_val = w_start + (w_end - w_start) * x_end_rel
-                                    
-                                    # Correction for Step Approximation:
-                                    # Simple average (Trapezoidal rule) is fine for integration
-                                    q_seg_avg = (q_start_val + q_end_val) / 2.0
+                                        # Trapezoidal rule for linear is exact
+                                        q_seg_avg = (q_start_val + q_end_val) / 2.0
                                     
                                     # Apply Uniform Load to Segment
                                     # Beam Local Y is Vertical (Global Z).
@@ -913,8 +969,9 @@ def run_load_case(data, case_type):
                                     
                                     # Track Equilibrium (Downwards = Negative)
                                     total_applied_force_z -= q_seg_avg * seg_len
+
                         
-                        item['applied_load'] = f"{load_params['load_summary']} (Stepped 4x)"
+                        item['applied_load'] = f"{load_params['load_summary']} (Stepped 8x, Simpson)"
                     else:
                         L = item['length']
                         w_live = (FLOOR_PRESSURE * L) / 4.0
