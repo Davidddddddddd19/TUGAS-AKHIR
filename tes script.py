@@ -411,22 +411,13 @@ def get_section_properties(element, doc):
                 
                 # -------------------------------------------------------
                 # TORSIONAL CONSTANT (J)
-                # J = (2*b*tf^3 + (d-tf)*tw^3) / 3
-                # With fillet correction: J_total = J + alpha * D^4
-                # where alpha depends on r/tf ratio
+                # SAP2000 compatible formula:
+                # J = (2*b*tf^3 + h_clear*tw^3) / 3
+                # h_clear = d - 2*tf - 2*r (accounting for fillet radius)
                 # -------------------------------------------------------
-                J_basic = (2 * b * tf**3 + (d - tf) * tw**3) / 3.0
-                
-                # Fillet correction (approximate)
-                if r > 0 and tf > 0:
-                    # Palmer-Maulbetsch formula correction
-                    D = 2 * r + tw
-                    alpha = 0.2 * (r / tf)  # Simplified coefficient
-                    J_fillet = alpha * D**4
-                else:
-                    J_fillet = 0.0
-                
-                props["J_mm4"] = round(J_basic + J_fillet, 0)
+                h_clear = d - 2*tf - 2*r  # Clear height of web minus fillets
+                J = (2 * b * tf**3 + h_clear * tw**3) / 3.0
+                props["J_mm4"] = round(J, 0)
                 
                 # -------------------------------------------------------
                 # Warping Constant Cw
@@ -438,12 +429,13 @@ def get_section_properties(element, doc):
                 props["Cw_mm6"] = round(Cw, 0)
 
                 # -------------------------------------------------------
-                # SHEAR AREAS (Avz, Avy)
-                # Avz (Strong Axis Shear) ~ d * tw
-                # Avy (Weak Axis Shear) ~ 2 * b * tf
+                # SHEAR AREAS (Avz, Avy) - SAP2000 Compatible
+                # Avz (Shear in 2 direction) = d * tw (standard web shear area)
+                # Avy (Shear in 3 direction) = 5/6 * 2 * b * tf (flanges with shear factor)
+                # The 5/6 factor accounts for the parabolic shear stress distribution
                 # -------------------------------------------------------
                 props["Avz_mm2"] = round(d * tw, 0)
-                props["Avy_mm2"] = round(2 * b * tf, 0)
+                props["Avy_mm2"] = round((5.0/6.0) * 2 * b * tf, 0)
 
                 # -------------------------------------------------------
                 # RADIUS OF GYRATION (rx, ry)
