@@ -1051,15 +1051,12 @@ def run_load_case(data, case_type):
                     # M1 (about X) relates to F2 (Y-direction force)
                     # M2 (about Y) relates to F1 (X-direction force)
                     
-                    # Apply M2 correction for LL and COMB cases (rigid zone lever arm effect)
-                    m2_factor = FACTOR_M2_LL if case_type in ['LL', 'COMB'] else 1.0
-                    
                     res["nodes"][nid]["reaction"] = {
                         "F1": round(reac[0], 2), # Fx -> F1
                         "F2": round(reac[1], 2), # Fy -> F2
                         "F3": round(reac[2], 2), # Fz -> F3
                         "M1": round(reac[3], 2), # Mx -> M1
-                        "M2": round(reac[4] * m2_factor, 2), # My -> M2 (rigid zone calibrated)
+                        "M2": round(reac[4], 2), # My -> M2 (rigid zone calibrated)
                         "M3": round(reac[5], 2)  # Mz -> M3
                     }
                     total_rz += reac[2]
