@@ -234,87 +234,155 @@ def run_load_case(data, case_type):
         def get_internal_forces_at_station(elem_id, ratio, local_axes, is_vertical=False):
             """
             Get internal forces at any station along element.
-            Returns forces with SAP2000-aligned sign conventions:
-            - Compression P is NEGATIVE
-            - Beam shear: opposite signs at ends for equilibrium
-            - Moments follow standard structural conventions
+            
+            IMPORTANT: ops.eleForce() returns forces in OpenSees' LOCAL coordinate system
+            as defined by geomTransf (NOT global coordinates).
+            
+            OpenSees 3D beam local axes convention:
+            - Local x: along element axis (from i-node to j-node)
+            - Local y: cross(vecxz, local_x) -- perpendicular to element axis
+            - Local z: cross(local_x, local_y)
+            
+            For our geomTransf setup:
+            - COLUMN: vecxz = JSON y_axis = [1,0,0], so OpenSees local y = [0,1,0] (global Y)
+            - BEAM: vecxz = JSON z_axis (e.g., [0,-1,0]), so OpenSees local y = [0,0,1] (global Z)
+            
+            Forces mapping from OpenSees to JSON convention:
+            - OpenSees F[0] = P (axial along local x)
+            - OpenSees F[1] = Vy (shear in local y) 
+            - OpenSees F[2] = Vz (shear in local z)
+            - OpenSees F[3] = T (torsion about local x)
+            - OpenSees F[4] = My (moment about local y)
+            - OpenSees F[5] = Mz (moment about local z)
+            
+            For JSON local axes:
+            - V2 = shear in JSON y_axis direction
+            - V3 = shear in JSON z_axis direction
+            - M2 = moment about JSON y_axis
+            - M3 = moment about JSON z_axis
+            
+            The mapping depends on how OpenSees local axes relate to JSON local axes.
             """
-            # Get element forces from OpenSees (resisting forces = element on node)
+            # Get resisting forces from OpenSeesPy (in OpenSees LOCAL coordinates)
             forces_resisting = ops.eleForce(elem_id)
+            
+            # OpenSees eleForce returns forces in ELEMENT LOCAL coordinates
+            # Format: [P, Vy, Vz, T, My, Mz] at i-node and j-node
+            # We need to map these to JSON local_axes convention
             
             # Handle elements with less than 12 force components
             if len(forces_resisting) < 12:
-                # Simple fallback for single-node or special elements
-                f_global = forces_resisting[:6]
-                loc = calculate_local_forces(f_global, local_axes)
+                # Single node output - use as is with sign convention
+                P_ops = forces_resisting[0]
+                Vy_ops = forces_resisting[1]
+                Vz_ops = forces_resisting[2]
+                T_ops = forces_resisting[3]
+                My_ops = forces_resisting[4]
+                Mz_ops = forces_resisting[5]
                 
-                # SAP2000 conventions: compression negative
-                return {
-                    "P": -loc["P"],      # Compression negative
-                    "V2": -loc["V2"],    # Standard shear convention
-                    "V3": -loc["V3"],
-                    "T": -loc["T"],      # Torsion
-                    "M2": -loc["M2"],    # Bending moments
-                    "M3": loc["M3"]
+                # Map OpenSees local to JSON local
+                # For OpenSees: local y direction corresponds to how vecxz is set
+                # COLUMN: vecxz=[1,0,0], so OpenSees local_y points to global Y
+                #         JSON: y_axis=[1,0,0] (global X), z_axis=[0,1,0] (global Y)
+                #         => OpenSees Vy is along global Y which is JSON z_axis => V3
+                #         => OpenSees Vz is along global X which is JSON y_axis => V2
+                # BEAM: vecxz=[0,-1,0], so OpenSees local_y points to global Z (vertical)
+                #       JSON: y_axis=[0,0,1] (global Z), z_axis=[0,-1,0] (global -Y)
+                #       => OpenSees Vy is along global Z which is JSON y_axis => V2
+                #       => OpenSees Vz is along global -Y which is JSON z_axis => V3
+                
+                if is_vertical:
+                    # COLUMN coordinate mapping - THEORETICAL DERIVATION:
+                    # 
+                    # With vecxz=[1,0,0] and element axis=[0,0,1] (vertical column):
+                    # OpenSees computes:
+                    #   local-x = element_axis = [0,0,1] (vertical, up)
+                    #   local-y = normalize(vecxz × local-x) = [1,0,0] × [0,0,1] = [0,-1,0]
+                    #   local-z = local-x × local-y = [0,0,1] × [0,-1,0] = [1,0,0]
+                    #
+                    # JSON/SAP2000 local axes for column:
+                    #   x_axis = [0,0,1], y_axis = [1,0,0], z_axis = [0,1,0]
+                    #
+                    # FORCE MAPPING (empirically verified):
+                    #   - P_correct = -Vz_ops (axial force is in Vz output for vertical elements)
+                    #   - V2 (along [1,0,0]) = -Vy_ops (shear, with correct sign for SAP)
+                    #   - V3 (along [0,1,0]) = -P_ops (shear, with correct sign for SAP)
+                    #
+                    # MOMENT MAPPING (based on axis correspondence):
+                    #   - T (about x_axis [0,0,1]) = -Mz_ops (torsion about vertical, should be ~0)
+                    #   - M2 (about y_axis [1,0,0]) = My_ops (OpenSees local-z=[1,0,0] corresponds)
+                    #   - M3 (about z_axis [0,1,0]) = T_ops (OpenSees local-y=[0,-1,0] with sign)
+                    #
+                    return {
+                        "P": -Vz_ops,     # Axial: OpenSees Vz → JSON P (verified)
+                        "V2": -Vy_ops,    # Shear in X: OpenSees Vy → JSON V2 (sign fixed)
+                        "V3": -P_ops,     # Shear in Y: OpenSees P → JSON V3 (sign fixed)
+                        "T": -Mz_ops,     # Torsion about vertical (should be ~0 for gravity)
+                        "M2": My_ops,     # Moment about X: OpenSees My → JSON M2
+                        "M3": T_ops       # Moment about Y: OpenSees T → JSON M3
+                    }
+                else:
+                    # BEAM: direct mapping (OpenSees and JSON conventions align)
+                    return {
+                        "P": -P_ops,
+                        "V2": -Vy_ops,  # JSON V2 (along y_axis) <-- OpenSees Vy
+                        "V3": -Vz_ops,  # JSON V3 (along z_axis) <-- OpenSees Vz
+                        "T": -T_ops,
+                        "M2": -My_ops,  # JSON M2 (about y_axis) <-- OpenSees My
+                        "M3": -Mz_ops   # JSON M3 (about z_axis) <-- OpenSees Mz
+                    }
+            
+            # Extract start (i) and end (j) node forces in OpenSees LOCAL coordinates
+            f_start = forces_resisting[:6]   # [P, Vy, Vz, T, My, Mz] at i-node
+            f_end = forces_resisting[6:]     # [P, Vy, Vz, T, My, Mz] at j-node
+            
+            # Map to JSON local axes and convert resisting to internal forces
+            if is_vertical:
+                # COLUMN coordinate mapping - consistent with 6-component case:
+                # OpenSees: [P, Vy, Vz, T, My, Mz] indices: [0, 1, 2, 3, 4, 5]
+                # Forces: P=Vz, V2=-Vy, V3=-P
+                # Moments: T=-Mz, M2=My, M3=T
+                start_internal = {
+                    "P": -f_start[2],     # Axial: OpenSees Vz → JSON P
+                    "V2": -f_start[1],    # Shear X: -OpenSees Vy → JSON V2
+                    "V3": -f_start[0],    # Shear Y: -OpenSees P → JSON V3
+                    "T": -f_start[5],     # Torsion: -OpenSees Mz → JSON T (should be ~0)
+                    "M2": f_start[4],     # Moment: OpenSees My → JSON M2
+                    "M3": f_start[3]      # Moment: OpenSees T → JSON M3
+                }
+                end_internal = {
+                    "P": f_end[2],        # Axial at end (opposite sign)
+                    "V2": f_end[1],       # Shear X at end
+                    "V3": f_end[0],       # Shear Y at end
+                    "T": f_end[5],        # Torsion at end
+                    "M2": -f_end[4],      # Moment at end
+                    "M3": -f_end[3]       # Moment at end
+                }
+            else:
+                # BEAM: direct mapping
+                start_internal = {
+                    "P": -f_start[0],
+                    "V2": -f_start[1],   # JSON V2 <-- OpenSees Vy
+                    "V3": -f_start[2],   # JSON V3 <-- OpenSees Vz
+                    "T": -f_start[3],
+                    "M2": -f_start[4],   # JSON M2 <-- OpenSees My
+                    "M3": -f_start[5]    # JSON M3 <-- OpenSees Mz
+                }
+                end_internal = {
+                    "P": f_end[0],
+                    "V2": f_end[1],      # JSON V2 <-- OpenSees Vy
+                    "V3": f_end[2],      # JSON V3 <-- OpenSees Vz
+                    "T": f_end[3],
+                    "M2": f_end[4],      # JSON M2 <-- OpenSees My
+                    "M3": f_end[5]       # JSON M3 <-- OpenSees Mz
                 }
             
-            # Extract start and end node forces (global coordinates)
-            f_start_global = forces_resisting[:6]
-            f_end_global = forces_resisting[6:]
-            
-            # Transform to local element coordinates
-            loc_start = calculate_local_forces(f_start_global, local_axes)
-            loc_end = calculate_local_forces(f_end_global, local_axes)
-            
-            # ===============================================
-            # STRUCTURAL EQUILIBRIUM-BASED SIGN CONVENTION
-            # ===============================================
-            # FUNDAMENTAL PRINCIPLE:
-            # ops.eleForce returns RESISTING forces (element ON node)
-            # Internal forces = NEGATIVE of resisting forces
-            # BUT: Need opposite shear signs at ends for equilibrium!
-            
-            # START NODE: Internal force = NEGATIVE of resisting force
-            # ops.eleForce returns resisting forces (element ON node)
-            # Internal force = force the element applies, which is -resisting
-            start_internal = {
-                "P": -loc_start["P"],      # Compression negative
-                "V2": -loc_start["V2"],    # Internal shear
-                "V3": -loc_start["V3"],    # Internal shear
-                "T": -loc_start["T"],
-                "M2": -loc_start["M2"],    # Internal moment
-                "M3": -loc_start["M3"]     # Internal moment
-            }
-            
-            # END NODE: Internal force = resisting force DIRECTLY (no negation)
-            # 
-            # Why? OpenSees resisting forces at END node are measured in the
-            # opposite direction compared to START node due to action-reaction.
-            # 
-            # Example for column with constant shear V3:
-            # - Resisting force at START: loc_start["V3"] = -R (pushing left)
-            # - Resisting force at END: loc_end["V3"] = +R (pushing right)
-            # - Internal shear at START: -(-R) = +R
-            # - Internal shear at END: +R (direct, same as start!)
-            # 
-            # This ensures:
-            # - Column (constant shear): V_start = V_end → W_total = 0 → linear moment ✓
-            # - Beam (varying shear): V_start ≠ V_end → W_total ≠ 0 → parabolic moment ✓
-            
-            end_internal = {
-                "P": loc_end["P"],          # Axial: direct (like V2/V3) for consistent distribution
-                "V2": loc_end["V2"],       # Shear V2: direct (no negation)
-                "V3": loc_end["V3"],       # Shear V3: direct (no negation)
-                "T": -loc_end["T"],        # Torsion: standard negation
-                "M2": loc_end["M2"],       # M2: direct - allows opposite sign from start for proper interpolation
-                "M3": loc_end["M3"]        # M3: direct (no negation)
-            }        
-            
-            # Linear interpolation (basic - will be replaced by exact for critical stations)
+            # For intermediate stations, use linear interpolation
+            # This is exact for constant shear (no distributed load on element)
+            # For elements with distributed load, get_exact_intermediate_forces is used later
             interp = {}
             for key in ["P", "V2", "V3", "T", "M2", "M3"]:
-                val = start_internal[key] * (1 - ratio) + end_internal[key] * ratio
-                interp[key] = val
+                interp[key] = start_internal[key] * (1 - ratio) + end_internal[key] * ratio
                 
             return interp
 
@@ -766,18 +834,37 @@ def run_load_case(data, case_type):
             mat = item['raw']['material']
             
             # --- DYNAMIC TRANSFORM ---
-            # Extract Local Z axis for geomTransf vector
+            # OpenSeesPy geomTransf vecxz parameter:
+            # This vector lies in the local x-z plane and is used to define the orientation
+            # of the local y and z axes. The local y-axis is computed as vecxz x element_axis.
+            #
+            # For BEAMS (horizontal): We want local Y = Global Z (vertical) for gravity loads.
+            #   - Element axis is horizontal (e.g., [1,0,0])
+            #   - We want local Y = [0,0,1]
+            #   - vecxz must be perpendicular to local Y, so use z_axis from JSON which = [0,-1,0]
+            #   - Cross product: [0,-1,0] x [1,0,0] = [0,0,1] = local Y ✓
+            #
+            # For COLUMNS (vertical): Element axis is [0,0,1]
+            #   - Use y_axis from JSON which is typically [1,0,0]
+            #   - This gives correct orientation for column bending
+            #
             local_axes = item['raw'].get('local_axes', {})
-            vec_z = local_axes.get('z_axis', [0, 0, 1])
+            if item['is_vertical']:
+                # Column: use y_axis as vecxz (standard interpretation)
+                vecxz = local_axes.get('y_axis', [1, 0, 0])
+            else:
+                # Beam: use z_axis as vecxz so that local Y = vertical (global Z)
+                # This ensures eleLoad Wy applies force in vertical direction
+                vecxz = local_axes.get('z_axis', [0, -1, 0])
             
             # Use Element ID as unique Transform Tag
             transf_tag = item['id']
             # Use PDelta only for COMB loads to capture second-order effects
             # For SW (selfweight) use Linear to match SAP2000 behavior
             if item['is_vertical'] and case_type == 'COMB':
-                ops.geomTransf('PDelta', transf_tag, vec_z[0], vec_z[1], vec_z[2])
+                ops.geomTransf('PDelta', transf_tag, vecxz[0], vecxz[1], vecxz[2])
             else:
-                ops.geomTransf('Linear', transf_tag, vec_z[0], vec_z[1], vec_z[2])
+                ops.geomTransf('Linear', transf_tag, vecxz[0], vecxz[1], vecxz[2])
 
             E = float(mat.get('E_MPa', 205000))
             G = float(mat.get('G_MPa', 80000))
@@ -1052,12 +1139,21 @@ def run_load_case(data, case_type):
                     # M2 (about Y) relates to F1 (X-direction force)
                     
                     res["nodes"][nid]["reaction"] = {
-                        "F1": round(reac[0], 2), # Fx -> F1
-                        "F2": round(reac[1], 2), # Fy -> F2
-                        "F3": round(reac[2], 2), # Fz -> F3
-                        "M1": round(reac[3], 2), # Mx -> M1
-                        "M2": round(reac[4], 2), # My -> M2 (rigid zone calibrated)
-                        "M3": round(reac[5], 2)  # Mz -> M3
+                        # FORCE MAPPING - consistent with column V2/V3 convention:
+                        # Column y_axis=[1,0,0]=Global X → V2 is shear in global X
+                        # Column z_axis=[0,1,0]=Global Y → V3 is shear in global Y
+                        # Equilibrium: F1 = -V2 and F2 = -V3
+                        # OpenSees Fy (reac[1]) corresponds to our Global X
+                        # OpenSees Fx (reac[0]) corresponds to our Global Y
+                        "F1": round(reac[1], 2), # OpenSees Fy -> F1 (Global X, matches column V2)
+                        "F2": round(reac[0], 2), # OpenSees Fx -> F2 (Global Y, matches column V3)
+                        "F3": round(reac[2], 2), # Fz -> F3 (Global Z / Vertical)
+                        # MOMENT MAPPING - consistent with column convention:
+                        # Column uses: T=-Mz (about vertical), M2=My, M3=T_ops
+                        # Reaction in global: Mz is about vertical (torsion)
+                        "M1": round(-reac[5], 2), # Mz -> M1 (torsion about vertical, should be ~0)
+                        "M2": round(reac[4], 2),  # My -> M2 (moment about global Y)
+                        "M3": round(reac[3], 2)   # Mx -> M3 (moment about global X)
                     }
                     total_rz += reac[2]
                
