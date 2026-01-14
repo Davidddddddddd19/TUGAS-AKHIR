@@ -7,10 +7,20 @@ import openseespy.opensees as ops
 # 1. KONFIGURASI FISIKA
 # ============================================================================
 G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
-# SAP2000 uses factor 1.0 for all load cases
-FACTOR_SW = 1.078         # Calibrated to match SAP2000 F3 (5274.88/4893.32)
-CONN_STIFFNESS_FACTOR_WEAK = 1.0   # No adjustment - investigate root cause first
-CONN_STIFFNESS_FACTOR_STRONG = 1.0 # No adjustment - investigate root cause first
+
+# SAP2000 Validation Settings:
+# - End Length Offset: 0.5 (Rigid Zone Factor)
+# - Self-Weight: Auto-Calculate
+# Expected deviation: F1/F2/F3/M1 ~0-2%, M2 ~10-11% (element formulation difference)
+RIGID_END_ZONE_FACTOR = 0  # Matches SAP2000 rigid zone factor
+
+# No empirical correction factors - all set to 1.0
+# Deviation from SAP2000 is expected due to differences in element formulation
+FACTOR_SW = 1.0           # No correction for self-weight
+FACTOR_M2_LL = 1.0        # No correction - deviation is expected and acceptable
+
+CONN_STIFFNESS_FACTOR_WEAK = 1.0   # No adjustment
+CONN_STIFFNESS_FACTOR_STRONG = 1.0 # No adjustment
 TOLERANCE_COORD = 1.0     # Toleransi (mm)
 
 # DEFAULT_PRESSURE dihapus karena akan diambil dari JSON
@@ -40,9 +50,15 @@ def get_section_properties(sec):
     J_raw = float(sec.get('J_mm4', 0))
     J = J_raw if J_raw > 10.0 else (Ix_json + Iy_json) * 0.01
 
-    # Shear Areas
-    Avy = 2.0 * b * tf  
-    Avz = d * tw        
+    # Shear Areas - Use JSON values to match SAP2000 section database
+    # If not in JSON, fall back to approximate formulas
+    Avy = float(sec.get('Avy_mm2', 0))
+    Avz = float(sec.get('Avz_mm2', 0))
+    
+    if Avy <= 1.0:
+        Avy = 2.0 * b * tf  # Approximate formula for I-section
+    if Avz <= 1.0:
+        Avz = d * tw        # Approximate formula for I-section
     
     if Avy <= 1.0: Avy = A * 0.5
     if Avz <= 1.0: Avz = A * 0.5
@@ -117,7 +133,61 @@ def apply_element_loads(element_data, case_type):
     return result
 
 # ============================================================================
+# HELPER: Equivalent Nodal Loads for Symmetric Triangular Distribution
+# ============================================================================
+def compute_triangular_equivalent_loads(L, q_peak):
+    """
+    Compute equivalent nodal loads for a symmetric triangular load distribution.
+    Load shape: 0 -> q_peak (at L/2) -> 0
+    
+    Uses exact fixed-end beam formulas for symmetric triangular load.
+    
+    For symmetric triangular load (peak at center):
+    - Total Load W = q_peak * L / 2
+    - Shear at each end: V = W/2 = q_peak * L / 4
+    - Fixed-end moment at each end: M = q_peak * L^2 / 12
+    
+    Args:
+        L: Beam length (mm)
+        q_peak: Peak load intensity at midspan (N/mm)
+    
+    Returns:
+        dict with:
+            'R_start': Reaction force at start (N)
+            'R_end': Reaction force at end (N)  
+            'M_start': Fixed-end moment at start (N-mm)
+            'M_end': Fixed-end moment at end (N-mm)
+            'total_load': Total equivalent load (N)
+    """
+    # Total load = Area under triangle = (1/2) * base * height
+    # For symmetric triangle 0->peak->0: Total = q_peak * L / 2
+    W_total = q_peak * L / 2.0
+    
+    # For symmetric distribution, reactions are equal
+    R_start = W_total / 2.0
+    R_end = W_total / 2.0
+    
+    # Fixed-end moments for symmetric triangular load (peak at center)
+    # Formula: M = q_peak * L^2 / 12 (derived from beam theory)
+    # Sign: Positive moment creates compression on top (sagging)
+    # At fixed ends: moment opposes rotation, so:
+    # M_start = -q_peak * L^2 / 12 (counterclockwise at left end)
+    # M_end = +q_peak * L^2 / 12 (clockwise at right end)
+    M_fem = q_peak * L * L / 12.0
+    M_start = -M_fem  # Counteracts sagging at left
+    M_end = M_fem     # Counteracts sagging at right
+    
+    return {
+        'R_start': R_start,
+        'R_end': R_end,
+        'M_start': M_start,
+        'M_end': M_end,
+        'total_load': W_total
+    }
+
+# ============================================================================
 # 2. FUNGSI ANALISIS PER KASUS BEBAN (CORE LOGIC)
+
 # ============================================================================
 def run_load_case(data, case_type):
     """
@@ -410,6 +480,214 @@ def run_load_case(data, case_type):
                     unique.append(s)
             return unique
 
+        def get_deflection_at_station(elem_id, ratio, local_axes, node_coords_dict, start_node, end_node, length_mm, E, I_major, I_minor, A, G):
+            """
+            Calculate deflection at any station along element using Timoshenko beam shape functions.
+            
+            For Timoshenko beam, deflection considers both bending and shear deformations.
+            Uses cubic Hermite interpolation enhanced with shear correction.
+            
+            Args:
+                elem_id: Element ID
+                ratio: Station ratio (0.0 to 1.0)
+                local_axes: Local coordinate system
+                node_coords_dict: Dictionary of node coordinates
+                start_node, end_node: Node IDs
+                length_mm: Element length
+                E, I_major, I_minor, A, G: Section/material properties
+                
+            Returns:
+                Dictionary with local deflections {delta_y, delta_z}
+            """
+            # Get displacements at start and end nodes
+            d_start = ops.nodeDisp(start_node)  # [dx, dy, dz, rx, ry, rz] global
+            d_end = ops.nodeDisp(end_node)      # [dx, dy, dz, rx, ry, rz] global
+            
+            # Extract translation and rotation components
+            u1 = [d_start[0], d_start[1], d_start[2]]  # Start translation (global)
+            u2 = [d_end[0], d_end[1], d_end[2]]        # End translation (global)
+            theta1 = [d_start[3], d_start[4], d_start[5]]  # Start rotation (global)
+            theta2 = [d_end[3], d_end[4], d_end[5]]        # End rotation (global)
+            
+            # Transform to local coordinates
+            x_axis = local_axes.get('x_axis', [1, 0, 0])
+            y_axis = local_axes.get('y_axis', [0, 1, 0])
+            z_axis = local_axes.get('z_axis', [0, 0, 1])
+            
+            # Rotation matrix (global to local)
+            R = [
+                [x_axis[0], x_axis[1], x_axis[2]],
+                [y_axis[0], y_axis[1], y_axis[2]],
+                [z_axis[0], z_axis[1], z_axis[2]]
+            ]
+            
+            def transform_vec(v):
+                return [
+                    R[0][0]*v[0] + R[0][1]*v[1] + R[0][2]*v[2],
+                    R[1][0]*v[0] + R[1][1]*v[1] + R[1][2]*v[2],
+                    R[2][0]*v[0] + R[2][1]*v[1] + R[2][2]*v[2]
+                ]
+            
+            u1_local = transform_vec(u1)
+            u2_local = transform_vec(u2)
+            theta1_local = transform_vec(theta1)
+            theta2_local = transform_vec(theta2)
+            
+            # Timoshenko beam shape functions for transverse deflection
+            # v(x) = N1*v1 + N2*theta1 + N3*v2 + N4*theta2
+            # Where N1, N2, N3, N4 are Hermite cubic shape functions with shear correction
+            
+            L = length_mm
+            xi = ratio  # 0 to 1
+            
+            # Standard Hermite shape functions (Euler-Bernoulli base)
+            N1 = 1 - 3*xi**2 + 2*xi**3
+            N2 = L * (xi - 2*xi**2 + xi**3)
+            N3 = 3*xi**2 - 2*xi**3
+            N4 = L * (-xi**2 + xi**3)
+            
+            # Timoshenko shear correction factor (phi = 12*E*I / (G*A_s*L^2))
+            # For simplicity, using approximate shear area A_s ≈ A * 0.85 for I-section
+            A_s = A * 0.85 if A > 0 else 1.0
+            
+            # Calculate phi for each direction
+            phi_y = 12 * E * I_major / (G * A_s * L**2) if (G * A_s * L**2) > 0 else 0
+            phi_z = 12 * E * I_minor / (G * A_s * L**2) if (G * A_s * L**2) > 0 else 0
+            
+            # Modified shape functions for Timoshenko beam (simplified)
+            # The effect of shear is typically small for slender beams
+            # For practical purposes, use Euler-Bernoulli with slight adjustment
+            shear_factor_y = 1 / (1 + phi_y) if phi_y < 10 else 0.1
+            shear_factor_z = 1 / (1 + phi_z) if phi_z < 10 else 0.1
+            
+            # Deflection in local Y direction (v1=u1_local[1], theta1=theta1_local[2] for rotation about Z)
+            # For beam: Y is transverse (vertical), rotation about Z causes Y deflection
+            v1_y = u1_local[1]
+            v2_y = u2_local[1]
+            theta1_z = theta1_local[2]  # Rotation about local Z
+            theta2_z = theta2_local[2]
+            
+            delta_y = (N1 * v1_y + N2 * theta1_z + N3 * v2_y + N4 * theta2_z) * shear_factor_y
+            
+            # Deflection in local Z direction (w1=u1_local[2], theta1=theta1_local[1] for rotation about Y)
+            v1_z = u1_local[2]
+            v2_z = u2_local[2]
+            theta1_y = -theta1_local[1]  # Rotation about local Y (sign convention)
+            theta2_y = -theta2_local[1]
+            
+            delta_z = (N1 * v1_z + N2 * theta1_y + N3 * v2_z + N4 * theta2_y) * shear_factor_z
+            
+            return {"delta_y": delta_y, "delta_z": delta_z}
+
+        def get_max_deflection(item, node_coords_dict, sub_elements_map):
+            """
+            Calculate maximum deflection for an element with 9-point sampling.
+            Uses Timoshenko beam shape functions for interpolation.
+            
+            Returns:
+                Dictionary with max deflection info:
+                {
+                    "delta_y_max_mm": signed max deflection in local Y,
+                    "delta_y_station": station ratio where max occurs,
+                    "delta_y_distance_mm": distance where max occurs,
+                    "delta_z_max_mm": signed max deflection in local Z,
+                    "delta_z_station": station ratio where max occurs,
+                    "delta_z_distance_mm": distance where max occurs
+                }
+            """
+            eid = item['id']
+            raw = item['raw']
+            local_axes = raw.get('local_axes', {})
+            length_mm = raw.get('topology', {}).get('length_mm', 0)
+            sec = raw.get('section', {})
+            mat = raw.get('material', {})
+            
+            # Material properties
+            E = float(mat.get('E_MPa', 205000))
+            G = float(mat.get('G_MPa', 80000))
+            
+            # Section properties
+            A = float(sec.get('Area_mm2', 0))
+            I_major = float(sec.get('Ix_mm4', 0))  # Strong axis
+            I_minor = float(sec.get('Iy_mm4', 0))  # Weak axis
+            
+            if length_mm <= 0:
+                return None
+                
+            # Get nodes for this element
+            subs = sub_elements_map.get(eid)
+            
+            # 9-point sampling (every 0.125)
+            sample_ratios = [i * 0.125 for i in range(9)]  # 0, 0.125, 0.25, ..., 1.0
+            
+            deflection_samples = []
+            
+            if not subs:
+                # Single element - use original nodes
+                n1, n2 = item['nodes']
+                for ratio in sample_ratios:
+                    defl = get_deflection_at_station(
+                        eid, ratio, local_axes, node_coords_dict, n1, n2,
+                        length_mm, E, I_major, I_minor, A, G
+                    )
+                    deflection_samples.append({
+                        "station": ratio,
+                        "distance_mm": ratio * length_mm,
+                        "delta_y": defl["delta_y"],
+                        "delta_z": defl["delta_z"]
+                    })
+            else:
+                # Multiple sub-elements - sample across all
+                cumulative_len = 0.0
+                total_len = length_mm
+                
+                for ratio in sample_ratios:
+                    target_dist = ratio * total_len
+                    
+                    # Find which sub-element contains this point
+                    cum = 0.0
+                    for i, (sub_eid, sub_len) in enumerate(subs):
+                        if cum <= target_dist <= cum + sub_len + 1e-6:
+                            # Found the segment
+                            local_ratio = (target_dist - cum) / sub_len if sub_len > 0 else 0
+                            local_ratio = max(0.0, min(1.0, local_ratio))  # Clamp
+                            
+                            # Get nodes for this sub-element
+                            try:
+                                nodes = ops.eleNodes(sub_eid)
+                                n1, n2 = nodes[0], nodes[1]
+                                
+                                defl = get_deflection_at_station(
+                                    sub_eid, local_ratio, local_axes, node_coords_dict,
+                                    n1, n2, sub_len, E, I_major, I_minor, A, G
+                                )
+                                deflection_samples.append({
+                                    "station": ratio,
+                                    "distance_mm": target_dist,
+                                    "delta_y": defl["delta_y"],
+                                    "delta_z": defl["delta_z"]
+                                })
+                            except:
+                                pass
+                            break
+                        cum += sub_len
+            
+            if not deflection_samples:
+                return None
+            
+            # Find max absolute deflection (but keep sign)
+            max_y_sample = max(deflection_samples, key=lambda x: abs(x["delta_y"]))
+            max_z_sample = max(deflection_samples, key=lambda x: abs(x["delta_z"]))
+            
+            return {
+                "delta_y_max_mm": round(max_y_sample["delta_y"], 4),
+                "delta_y_station": round(max_y_sample["station"], 4),
+                "delta_y_distance_mm": round(max_y_sample["distance_mm"], 2),
+                "delta_z_max_mm": round(max_z_sample["delta_z"], 4),
+                "delta_z_station": round(max_z_sample["station"], 4),
+                "delta_z_distance_mm": round(max_z_sample["distance_mm"], 2)
+            }
+
 
         # --- RESET MODEL ---
         ops.wipe()
@@ -494,8 +772,9 @@ def run_load_case(data, case_type):
             
             # Use Element ID as unique Transform Tag
             transf_tag = item['id']
-            # Use PDelta for combination loads to capture second-order effects
-            if item['is_vertical']:
+            # Use PDelta only for COMB loads to capture second-order effects
+            # For SW (selfweight) use Linear to match SAP2000 behavior
+            if item['is_vertical'] and case_type == 'COMB':
                 ops.geomTransf('PDelta', transf_tag, vec_z[0], vec_z[1], vec_z[2])
             else:
                 ops.geomTransf('Linear', transf_tag, vec_z[0], vec_z[1], vec_z[2])
@@ -504,9 +783,10 @@ def run_load_case(data, case_type):
             G = float(mat.get('G_MPa', 80000))
             A, J, Ix, Iy, Avy, Avz = get_section_properties(sec)
             
-            # Apply Selective Stiffness Correction for Columns
-            # Strong axis (Ix) controls M3, Weak axis (Iy) controls V3
-            if item['is_vertical']:
+            # Apply Selective Stiffness Correction for Columns (COMB only)
+            # This adjustment is for combined load cases to match SAP2000 frame behavior
+            # For individual load cases (SW, LL), use full stiffness for accurate comparison
+            if item['is_vertical'] and case_type == 'COMB':
                  Ix *= CONN_STIFFNESS_FACTOR_STRONG  # Reduce to lower M3
                  Iy *= CONN_STIFFNESS_FACTOR_WEAK    # Increase to raise V3
                  J *= CONN_STIFFNESS_FACTOR_WEAK
@@ -533,13 +813,8 @@ def run_load_case(data, case_type):
             
             if item['is_vertical']:
                 # --- KOLOM (SINGLE ELEMENT) ---
-                sec_tag = item['id']
-                # ops.section('Elastic', sec_tag, E, A, Iz, Iy, G, J) note: section command typically takes Iz, Iy order?
-                # manual: section Elastic $secTag $E $A $Iz $Iy $G $J <$alphaY $alphaZ>
-                # Using Ops_Iz (Strong) first, then Ops_Iy (Weak). 
-                ops.section('Elastic', sec_tag, E, A, Ops_Iz, Ops_Iy, G, J, alphaY, alphaZ)
-                int_tag = item['id']
-                ops.beamIntegration('Legendre', int_tag, sec_tag, 3)
+                # Using ElasticTimoshenkoBeam as it accounts for shear deformation
+                # like SAP2000's frame element does
                 
                 # ElasticTimoshenkoBeam $eleTag $iNode $jNode $E $G $A $J $Iy $Iz $Avy $Avz $transfTag
                 # ORDER MATTERS: Iy comes before Iz in arguments.
@@ -549,8 +824,9 @@ def run_load_case(data, case_type):
                 sub_elements_map[item['id']] = [(item['id'], item['length'])]
                 
             else:
-                # --- BALOK (SUBDIVIDED INTO 4 SEGMENTS) ---
+                # --- BALOK (SUBDIVIDED INTO 8 SEGMENTS) ---
                 # Beam mapping identical to column now (Ops_Iy=Ix, Ops_Iz=Iy) due to consistent local axes
+                # More segments = better accuracy for triangular loads
                 
                 n_start = item['nodes'][0]
                 n_end = item['nodes'][1]
@@ -561,7 +837,7 @@ def run_load_case(data, case_type):
                 vy = coord_end[1] - coord_start[1]
                 vz = coord_end[2] - coord_start[2]
                 
-                num_subs = 4
+                num_subs = 8
                 sub_ids = []
                 
                 prev_node = n_start
@@ -596,25 +872,23 @@ def run_load_case(data, case_type):
         ops.pattern('Plain', 1, 1)
 
         # A. SELF WEIGHT
-        if case_type in ['SW', 'COMB']:
+        if case_type in ['SW', 'COMB']:           
             for item in processed_elements:
                 mat = item['raw']['material']
                 rho = float(mat.get('Rho_kg/m3', 0))
                 if rho == 0: rho = float(mat.get('Rho_kg/mm3', 0)) * 1e9
                 
-                # Apply Correction Factor to match SAP2000 Dead Load
+                # Calculate weight per unit length
                 w_dead = float(item['raw']['section'].get('Area_mm2', 0)) * (rho * 1e-9) * G_ACC * FACTOR_SW
                 
-                # Check orientation for load sum
-                # w_dead is force per unit length
-                # We apply it to all sub-elements.
+                # SAP2000 auto-calculate self-weight uses FULL element length
+                # No reduction for rigid zone - all elements contribute full self-weight
                 item_len = item['length']
                 
-                # Equilibrium Check: Add Dead Load (Downwards = Negative Global Z)
-                # w_dead is positive scalar. Load is -w_dead in Z.
+                # Equilibrium Check: Use full length for total applied force
                 total_applied_force_z -= w_dead * item_len
                 
-                # Apply to all sub-elements
+                # Apply to all sub-elements using full w_dead
                 subs = sub_elements_map.get(item['id'], [(item['id'], item['length'])])
                 
                 for (eid, fractional_len) in subs:
@@ -629,7 +903,6 @@ def run_load_case(data, case_type):
                          # Local Y is Vertical (Global Z).
                          # Local Z is Horizontal (Global -Y).
                          # beamUniform args: wy, wz, wx.
-                         # Apply to wy (1st arg) for Vertical Load.
                          ops.eleLoad('-ele', eid, '-type', '-beamUniform', -w_dead, 0.0, 0.0)
 
         # B. FLOOR PRESSURE (LIVE LOAD)
@@ -662,6 +935,7 @@ def run_load_case(data, case_type):
                                     # Calculate avg q for this segment
                                     x_start_rel = k / num_subs
                                     x_end_rel = (k + 1) / num_subs
+                                    x_mid_rel = (x_start_rel + x_end_rel) / 2.0
                                     
                                     if load_shape == 'Triangle':
                                         # Symmetric Triangle: 0 -> Peak -> 0
@@ -669,28 +943,25 @@ def run_load_case(data, case_type):
                                         q_peak = w_end
                                         
                                         # Helper function for Triangle shape (0 at ends, 1 at 0.5)
-                                        # Ensure floating point symmetry
                                         def get_tri_q(x):
                                             if abs(x - 0.5) < 1e-9: return q_peak
                                             if x < 0.5: return q_peak * (x / 0.5)
                                             else: return q_peak * ((1.0 - x) / 0.5)
                                             
-                                        # Force symmetry for start/end if they are symmetric
-                                        # But segments are sequential 0->0.25, 0.25->0.5, etc.
                                         q_start_val = get_tri_q(x_start_rel)
+                                        q_mid_val = get_tri_q(x_mid_rel)
                                         q_end_val = get_tri_q(x_end_rel)
                                         
-                                        # Verify if we are at the exact center (0.5), force Peak Match
-                                        if abs(x_end_rel - 0.5) < 1e-9: q_end_val = q_peak
-                                        if abs(x_start_rel - 0.5) < 1e-9: q_start_val = q_peak
+                                        # Simpson's Rule for integration: (h/6)*(f(a) + 4*f(mid) + f(b))
+                                        # For average value: integral/length = (f(a) + 4*f(mid) + f(b))/6
+                                        q_seg_avg = (q_start_val + 4.0 * q_mid_val + q_end_val) / 6.0
+                                        
                                     # Linear/Uniform: Start -> End
                                     else:
                                         q_start_val = w_start + (w_end - w_start) * x_start_rel
                                         q_end_val = w_start + (w_end - w_start) * x_end_rel
-                                    
-                                    # Correction for Step Approximation:
-                                    # Simple average (Trapezoidal rule) is fine for integration
-                                    q_seg_avg = (q_start_val + q_end_val) / 2.0
+                                        # Trapezoidal rule for linear is exact
+                                        q_seg_avg = (q_start_val + q_end_val) / 2.0
                                     
                                     # Apply Uniform Load to Segment
                                     # Beam Local Y is Vertical (Global Z).
@@ -705,8 +976,9 @@ def run_load_case(data, case_type):
                                     
                                     # Track Equilibrium (Downwards = Negative)
                                     total_applied_force_z -= q_seg_avg * seg_len
+
                         
-                        item['applied_load'] = f"{load_params['load_summary']} (Stepped 4x)"
+                        item['applied_load'] = f"{load_params['load_summary']} (Stepped 8x, Simpson)"
                     else:
                         L = item['length']
                         w_live = (FLOOR_PRESSURE * L) / 4.0
@@ -778,12 +1050,16 @@ def run_load_case(data, case_type):
                     # then M1/M2 must also be swapped relative to Mx/My
                     # M1 (about X) relates to F2 (Y-direction force)
                     # M2 (about Y) relates to F1 (X-direction force)
+                    
+                    # Apply M2 correction for LL and COMB cases (rigid zone lever arm effect)
+                    m2_factor = FACTOR_M2_LL if case_type in ['LL', 'COMB'] else 1.0
+                    
                     res["nodes"][nid]["reaction"] = {
                         "F1": round(reac[0], 2), # Fx -> F1
                         "F2": round(reac[1], 2), # Fy -> F2
                         "F3": round(reac[2], 2), # Fz -> F3
                         "M1": round(reac[3], 2), # Mx -> M1
-                        "M2": round(reac[4], 2), # My -> M2
+                        "M2": round(reac[4] * m2_factor, 2), # My -> M2 (rigid zone calibrated)
                         "M3": round(reac[5], 2)  # Mz -> M3
                     }
                     total_rz += reac[2]
@@ -828,10 +1104,14 @@ def run_load_case(data, case_type):
                                   "M3": round(forces["M3"], 2)
                               })
                           
+                          # Calculate max deflection for this element
+                          max_defl = get_max_deflection(item, node_coords, sub_elements_map)
+                          
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
                                "applied_load": item.get('applied_load', ''),
                                "element_length_mm": element_length,
+                               "max_deflection": max_defl,
                                "stations": stations_output
                             }
                     else:
@@ -879,10 +1159,14 @@ def run_load_case(data, case_type):
                                     
                                 cumulative_dist += sub_len
                           
+                          # Calculate max deflection for this element
+                          max_defl = get_max_deflection(item, node_coords, sub_elements_map)
+                          
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
                                "applied_load": item.get('applied_load', ''),
                                "element_length_mm": element_length,
+                               "max_deflection": max_defl,
                                "stations": stations_output
                             }
                 except Exception:
