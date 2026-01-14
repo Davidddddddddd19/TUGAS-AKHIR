@@ -19,7 +19,7 @@ clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 
 from Autodesk.Revit.DB import *
-from Autodesk.Revit.DB.Structure import StructuralType 
+from Autodesk.Revit.DB.Structure import StructuralType, StructuralFramingUtils
 from Autodesk.Revit.UI import TaskDialog
 from pyrevit import script, HOST_APP, revit # Added revit import
 
@@ -46,6 +46,10 @@ HEIGHT_MM   = 4000.0
 LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
 
 COLUMN_ROTATION_DEG = 0
+
+# 4. Join Status untuk Structural Framing (Beam)
+# True = Allow Join at ends, False = Disallow Join at ends
+JOIN_STATUS = True  # Set False to disallow joins (untuk mencegah cut/extend otomatis)
 
 SEARCH_TERMS_COL = ["Universal Column", "M_Concrete-Rectangular-Column", "UC", "Col"]
 SEARCH_TERMS_BEAM = ["Universal Beam", "M_Concrete-Rectangular-Beam", "UB", "Framing"]
@@ -1047,6 +1051,20 @@ try:
             def mk_bm(p_start, p_end):
                 b = doc.Create.NewFamilyInstance(Line.CreateBound(p_start, p_end), beam_sym, lt, StructuralType.Beam)
                 set_beam_alignment_safe(b)
+                
+                # Set Join Status for Structural Framing
+                # End index: 0 = start end, 1 = end end
+                try:
+                    if JOIN_STATUS:
+                        StructuralFramingUtils.AllowJoinAtEnd(b, 0)
+                        StructuralFramingUtils.AllowJoinAtEnd(b, 1)
+                    else:
+                        StructuralFramingUtils.DisallowJoinAtEnd(b, 0)
+                        StructuralFramingUtils.DisallowJoinAtEnd(b, 1)
+                except Exception as join_err:
+                    pass  # Silently ignore if join modification fails
+                
+                return b.Id
                 
             # Balok Arah X (Horizontal)
             for j in range(BAY_Y_COUNT + 1):
