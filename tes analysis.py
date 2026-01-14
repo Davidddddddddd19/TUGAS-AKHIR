@@ -8,11 +8,16 @@ import openseespy.opensees as ops
 # ============================================================================
 G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
 
-# SAP2000 Calibration (rho = 7154 kg/m³):
-# Target F3 = 4830.09 N, Current = 4893.32 N → FACTOR_SW = 0.987
-# Target M2 = 166390.98 N-mm, Iteration1 = 188457.88 N-mm → FACTOR_M2 = 0.883
-FACTOR_SW = 0.987         # Self-weight calibration to match SAP2000 F3
-FACTOR_M2 = 0.883         # M2 calibration to match SAP2000 M2 (within 5%)
+# SAP2000 Validation Settings:
+# - End Length Offset: 0.5 (Rigid Zone Factor)
+# - Self-Weight: Auto-Calculate
+# Expected deviation: F1/F2/F3/M1 ~0-2%, M2 ~10-11% (element formulation difference)
+RIGID_END_ZONE_FACTOR = 0.5  # Matches SAP2000 rigid zone factor
+
+# No empirical correction factors - all set to 1.0
+# Deviation from SAP2000 is expected due to differences in element formulation
+FACTOR_SW = 1.0           # No correction for self-weight
+FACTOR_M2_LL = 1.0        # No correction - deviation is expected and acceptable
 
 CONN_STIFFNESS_FACTOR_WEAK = 1.0   # No adjustment
 CONN_STIFFNESS_FACTOR_STRONG = 1.0 # No adjustment
@@ -45,9 +50,15 @@ def get_section_properties(sec):
     J_raw = float(sec.get('J_mm4', 0))
     J = J_raw if J_raw > 10.0 else (Ix_json + Iy_json) * 0.01
 
-    # Shear Areas
-    Avy = 2.0 * b * tf  
-    Avz = d * tw        
+    # Shear Areas - Use JSON values to match SAP2000 section database
+    # If not in JSON, fall back to approximate formulas
+    Avy = float(sec.get('Avy_mm2', 0))
+    Avz = float(sec.get('Avz_mm2', 0))
+    
+    if Avy <= 1.0:
+        Avy = 2.0 * b * tf  # Approximate formula for I-section
+    if Avz <= 1.0:
+        Avz = d * tw        # Approximate formula for I-section
     
     if Avy <= 1.0: Avy = A * 0.5
     if Avz <= 1.0: Avz = A * 0.5
@@ -802,13 +813,8 @@ def run_load_case(data, case_type):
             
             if item['is_vertical']:
                 # --- KOLOM (SINGLE ELEMENT) ---
-                sec_tag = item['id']
-                # ops.section('Elastic', sec_tag, E, A, Iz, Iy, G, J) note: section command typically takes Iz, Iy order?
-                # manual: section Elastic $secTag $E $A $Iz $Iy $G $J <$alphaY $alphaZ>
-                # Using Ops_Iz (Strong) first, then Ops_Iy (Weak). 
-                ops.section('Elastic', sec_tag, E, A, Ops_Iz, Ops_Iy, G, J, alphaY, alphaZ)
-                int_tag = item['id']
-                ops.beamIntegration('Legendre', int_tag, sec_tag, 3)
+                # Using ElasticTimoshenkoBeam as it accounts for shear deformation
+                # like SAP2000's frame element does
                 
                 # ElasticTimoshenkoBeam $eleTag $iNode $jNode $E $G $A $J $Iy $Iz $Avy $Avz $transfTag
                 # ORDER MATTERS: Iy comes before Iz in arguments.
@@ -866,25 +872,23 @@ def run_load_case(data, case_type):
         ops.pattern('Plain', 1, 1)
 
         # A. SELF WEIGHT
-        if case_type in ['SW', 'COMB']:
+        if case_type in ['SW', 'COMB']:           
             for item in processed_elements:
                 mat = item['raw']['material']
                 rho = float(mat.get('Rho_kg/m3', 0))
                 if rho == 0: rho = float(mat.get('Rho_kg/mm3', 0)) * 1e9
                 
-                # Apply Correction Factor to match SAP2000 Dead Load
+                # Calculate weight per unit length
                 w_dead = float(item['raw']['section'].get('Area_mm2', 0)) * (rho * 1e-9) * G_ACC * FACTOR_SW
                 
-                # Check orientation for load sum
-                # w_dead is force per unit length
-                # We apply it to all sub-elements.
+                # SAP2000 auto-calculate self-weight uses FULL element length
+                # No reduction for rigid zone - all elements contribute full self-weight
                 item_len = item['length']
                 
-                # Equilibrium Check: Add Dead Load (Downwards = Negative Global Z)
-                # w_dead is positive scalar. Load is -w_dead in Z.
+                # Equilibrium Check: Use full length for total applied force
                 total_applied_force_z -= w_dead * item_len
                 
-                # Apply to all sub-elements
+                # Apply to all sub-elements using full w_dead
                 subs = sub_elements_map.get(item['id'], [(item['id'], item['length'])])
                 
                 for (eid, fractional_len) in subs:
@@ -899,7 +903,6 @@ def run_load_case(data, case_type):
                          # Local Y is Vertical (Global Z).
                          # Local Z is Horizontal (Global -Y).
                          # beamUniform args: wy, wz, wx.
-                         # Apply to wy (1st arg) for Vertical Load.
                          ops.eleLoad('-ele', eid, '-type', '-beamUniform', -w_dead, 0.0, 0.0)
 
         # B. FLOOR PRESSURE (LIVE LOAD)
@@ -1047,12 +1050,16 @@ def run_load_case(data, case_type):
                     # then M1/M2 must also be swapped relative to Mx/My
                     # M1 (about X) relates to F2 (Y-direction force)
                     # M2 (about Y) relates to F1 (X-direction force)
+                    
+                    # Apply M2 correction for LL and COMB cases (rigid zone lever arm effect)
+                    m2_factor = FACTOR_M2_LL if case_type in ['LL', 'COMB'] else 1.0
+                    
                     res["nodes"][nid]["reaction"] = {
                         "F1": round(reac[0], 2), # Fx -> F1
                         "F2": round(reac[1], 2), # Fy -> F2
                         "F3": round(reac[2], 2), # Fz -> F3
                         "M1": round(reac[3], 2), # Mx -> M1
-                        "M2": round(reac[4] * FACTOR_M2, 2), # My -> M2 (calibrated)
+                        "M2": round(reac[4] * m2_factor, 2), # My -> M2 (rigid zone calibrated)
                         "M3": round(reac[5], 2)  # Mz -> M3
                     }
                     total_rz += reac[2]
