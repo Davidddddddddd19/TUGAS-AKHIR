@@ -19,7 +19,7 @@ clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 
 from Autodesk.Revit.DB import *
-from Autodesk.Revit.DB.Structure import StructuralType 
+from Autodesk.Revit.DB.Structure import StructuralType, StructuralFramingUtils
 from Autodesk.Revit.UI import TaskDialog
 from pyrevit import script, HOST_APP, revit # Added revit import
 
@@ -46,6 +46,10 @@ HEIGHT_MM   = 4000.0
 LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
 
 COLUMN_ROTATION_DEG = 0
+
+# 4. Join Status untuk Structural Framing (Beam)
+# True = Allow Join at ends, False = Disallow Join at ends
+JOIN_STATUS = True  # Set False to disallow joins (untuk mencegah cut/extend otomatis)
 
 SEARCH_TERMS_COL = ["Universal Column", "M_Concrete-Rectangular-Column", "UC", "Col"]
 SEARCH_TERMS_BEAM = ["Universal Beam", "M_Concrete-Rectangular-Beam", "UB", "Framing"]
@@ -242,8 +246,15 @@ def get_material_data(element, doc):
 
                         # PHY Params Lookup
                         mat_data["E_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_YOUNG_MOD1))
-                        mat_data["G_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_SHEAR_MOD1))
                         mat_data["Nu"]    = round(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_POISSON_MOD1), 3)
+                        
+                        # Calculate G from E and Nu: G = E / (2*(1+nu))
+                        E_val = mat_data["E_MPa"]
+                        Nu_val = mat_data["Nu"]
+                        if Nu_val > -1.0:  # Avoid division by zero
+                            mat_data["G_MPa"] = round(E_val / (2.0 * (1.0 + Nu_val)), 2)
+                        else:
+                            mat_data["G_MPa"] = val2mpa(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_SHEAR_MOD1))
                         
                         mat_data["Rho_kg/mm3"] = val2kgmm3(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_UNIT_WEIGHT))
                         mat_data["Alpha_C"] = val2invC(get_p(BuiltInParameter.PHY_MATERIAL_PARAM_EXP_COEFF1))
@@ -339,53 +350,30 @@ def get_section_properties(element, doc):
             
             if d > 0 and b > 0 and tf > 0 and tw > 0:
                 # -------------------------------------------------------
-                # AREA CALCULATION (with fillet)
-                # A = 2*b*tf + (d-2*tf)*tw + (4-pi)*r^2
+                # AREA CALCULATION (SAP2000 compatible - no fillet)
+                # A = 2*b*tf + (d-2*tf)*tw
                 # -------------------------------------------------------
                 h_web = d - 2*tf  # Clear height of web
                 A_flanges = 2 * b * tf
                 A_web = h_web * tw
-                A_fillets = (4 - math.pi) * r * r if r > 0 else 0.0
-                Area_calc = A_flanges + A_web + A_fillets
+                Area_calc = A_flanges + A_web
                 
-                # Use calculated area if API didn't provide
-                if props["Area_mm2"] <= 0:
-                    props["Area_mm2"] = round(Area_calc, 2)
+                # Use calculated area (SAP2000 compatible)
+                props["Area_mm2"] = round(Area_calc, 2)
                 
                 # -------------------------------------------------------
-                # MOMENT OF INERTIA - STRONG AXIS (Ix)
-                # Ix = (b*d^3)/12 - 2*((b-tw)/2 * (d-2*tf)^3)/12 + fillet_contribution
-                # Simplified: Ix = (b*d^3 - (b-tw)*h_web^3) / 12 + I_fillet
+                # MOMENT OF INERTIA - STRONG AXIS (Ix) - SAP2000 Compatible
+                # Ix = (b*d^3 - (b-tw)*(d-2*tf)^3) / 12
                 # -------------------------------------------------------
-                Ix_rect = (b * d**3) / 12.0
-                Ix_cutout = ((b - tw) * h_web**3) / 12.0
-                
-                # Fillet contribution to Ix (approximate)
-                # Each fillet is at distance (d/2 - tf - r/2) from centroid
-                if r > 0:
-                    A_fillet_single = (1 - math.pi/4) * r * r
-                    y_fillet = (d/2 - tf - 0.223*r)  # Approximate centroid of fillet
-                    Ix_fillet = 4 * A_fillet_single * y_fillet**2
-                else:
-                    Ix_fillet = 0.0
-                
-                props["Ix_mm4"] = round(Ix_rect - Ix_cutout + Ix_fillet, 0)
+                Ix = (b * d**3 - (b - tw) * h_web**3) / 12.0
+                props["Ix_mm4"] = round(Ix, 0)
                 
                 # -------------------------------------------------------
-                # MOMENT OF INERTIA - WEAK AXIS (Iy)
-                # Iy = 2*(tf*b^3)/12 + (d-2*tf)*tw^3/12 + fillet_contribution
+                # MOMENT OF INERTIA - WEAK AXIS (Iy) - SAP2000 Compatible
+                # Iy = (2*tf*b^3 + (d-2*tf)*tw^3) / 12
                 # -------------------------------------------------------
-                Iy_flanges = 2 * (tf * b**3) / 12.0
-                Iy_web = (h_web * tw**3) / 12.0
-                
-                # Fillet contribution to Iy (approximate)
-                if r > 0:
-                    x_fillet = (tw/2 + 0.223*r)  # Approximate centroid of fillet from centerline
-                    Iy_fillet = 4 * A_fillet_single * x_fillet**2
-                else:
-                    Iy_fillet = 0.0
-                
-                props["Iy_mm4"] = round(Iy_flanges + Iy_web + Iy_fillet, 0)
+                Iy = (2 * tf * b**3 + h_web * tw**3) / 12.0
+                props["Iy_mm4"] = round(Iy, 0)
                 
                 # -------------------------------------------------------
                 # ELASTIC SECTION MODULUS (Sx, Sy)
@@ -410,23 +398,14 @@ def get_section_properties(element, doc):
                 props["Zy_mm3"] = round(Zy, 0)
                 
                 # -------------------------------------------------------
-                # TORSIONAL CONSTANT (J)
-                # J = (2*b*tf^3 + (d-tf)*tw^3) / 3
-                # With fillet correction: J_total = J + alpha * D^4
-                # where alpha depends on r/tf ratio
+                # TORSIONAL CONSTANT (J) - SAP2000 Compatible
+                # J = K * (2*b*tf^3 + (d-2*tf)*tw^3) / 3
+                # K = 0.9668 is a correction factor for web-flange junction
+                # Based on SAP2000 reference: J = beta * a^3 * b for rectangles
                 # -------------------------------------------------------
-                J_basic = (2 * b * tf**3 + (d - tf) * tw**3) / 3.0
-                
-                # Fillet correction (approximate)
-                if r > 0 and tf > 0:
-                    # Palmer-Maulbetsch formula correction
-                    D = 2 * r + tw
-                    alpha = 0.2 * (r / tf)  # Simplified coefficient
-                    J_fillet = alpha * D**4
-                else:
-                    J_fillet = 0.0
-                
-                props["J_mm4"] = round(J_basic + J_fillet, 0)
+                J_RAW_FACTOR = 0.9668  # SAP2000 correction factor
+                J = J_RAW_FACTOR * (2 * b * tf**3 + h_web * tw**3) / 3.0
+                props["J_mm4"] = round(J, 0)
                 
                 # -------------------------------------------------------
                 # Warping Constant Cw
@@ -438,12 +417,12 @@ def get_section_properties(element, doc):
                 props["Cw_mm6"] = round(Cw, 0)
 
                 # -------------------------------------------------------
-                # SHEAR AREAS (Avz, Avy)
-                # Avz (Strong Axis Shear) ~ d * tw
-                # Avy (Weak Axis Shear) ~ 2 * b * tf
+                # SHEAR AREAS (Avz, Avy) - SAP2000 Compatible
+                # Avz (Shear in 2 direction) = d * tw
+                # Avy (Shear in 3 direction) = 2 * b * tf * (5/6)
                 # -------------------------------------------------------
-                props["Avz_mm2"] = round(d * tw, 0)
-                props["Avy_mm2"] = round(2 * b * tf, 0)
+                props["Avz_mm2"] = round(d * tw, 2)
+                props["Avy_mm2"] = round(2 * b * tf * (5.0/6.0), 4)
 
                 # -------------------------------------------------------
                 # RADIUS OF GYRATION (rx, ry)
@@ -451,8 +430,8 @@ def get_section_properties(element, doc):
                 # ry = sqrt(Iy / A)
                 # -------------------------------------------------------
                 if props["Area_mm2"] > 0:
-                    props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 1)
-                    props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 1)
+                    props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 4)
+                    props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 4)
             
             return props
 
@@ -508,20 +487,21 @@ def get_section_properties(element, doc):
             props["Zx_mm3"] = round(b*tf*(d-tf) + tw*h_web**2/4, 0)
             props["Zy_mm3"] = round(b**2*tf/2 + h_web*tw**2/4, 0)
             
-            # Torsional constant
-            props["J_mm4"] = round((2*b*tf**3 + (d-tf)*tw**3) / 3.0, 0)
+            # Torsional constant (SAP2000 compatible with K factor)
+            J_RAW_FACTOR = 0.9668
+            props["J_mm4"] = round(J_RAW_FACTOR * (2*b*tf**3 + h_web*tw**3) / 3.0, 0)
             
             # Warping constant
             h0 = d - tf
             props["Cw_mm6"] = round(Iy * h0**2 / 4.0, 0)
             
             # -------------------------------------------------------
-            # SHEAR AREAS (Avz, Avy)
-            # Avz (Strong Axis Shear) ~ d * tw
-            # Avy (Weak Axis Shear) ~ 2 * b * tf
+            # SHEAR AREAS (Avz, Avy) - SAP2000 Compatible
+            # Avz (Strong Axis Shear) = d * tw
+            # Avy (Weak Axis Shear) = 2 * b * tf * (5/6)
             # -------------------------------------------------------
-            props["Avz_mm2"] = round(d * tw, 0)
-            props["Avy_mm2"] = round(2 * b * tf, 0)
+            props["Avz_mm2"] = round(d * tw, 2)
+            props["Avy_mm2"] = round(2 * b * tf * (5.0/6.0), 4)
 
             # -------------------------------------------------------
             # RADIUS OF GYRATION (rx, ry)
@@ -529,8 +509,8 @@ def get_section_properties(element, doc):
             # ry = sqrt(Iy / A)
             # -------------------------------------------------------
             if props["Area_mm2"] > 0:
-                props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 1)
-                props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 1)
+                props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 4)
+                props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 4)
             
             # Set default centroids for symmetric section
             props["cx_mm"] = round(b / 2.0, 2)
@@ -1071,6 +1051,20 @@ try:
             def mk_bm(p_start, p_end):
                 b = doc.Create.NewFamilyInstance(Line.CreateBound(p_start, p_end), beam_sym, lt, StructuralType.Beam)
                 set_beam_alignment_safe(b)
+                
+                # Set Join Status for Structural Framing
+                # End index: 0 = start end, 1 = end end
+                try:
+                    if JOIN_STATUS:
+                        StructuralFramingUtils.AllowJoinAtEnd(b, 0)
+                        StructuralFramingUtils.AllowJoinAtEnd(b, 1)
+                    else:
+                        StructuralFramingUtils.DisallowJoinAtEnd(b, 0)
+                        StructuralFramingUtils.DisallowJoinAtEnd(b, 1)
+                except Exception as join_err:
+                    pass  # Silently ignore if join modification fails
+                
+                return b.Id
                 
             # Balok Arah X (Horizontal)
             for j in range(BAY_Y_COUNT + 1):
@@ -1833,6 +1827,71 @@ if json_success:
                                         columns=["Komponen", "Max (+)", "Elem Max", "Min (-)", "Elem Min"],
                                         title="📊 Ringkasan Analisis ({})".format(case_key)
                                     )
+
+                                    # ===========================================================
+                                    # D. TABEL DEFLEKSI MAKSIMUM (NEW)
+                                    # ===========================================================
+                                    deflection_data = []
+                                    
+                                    if 'elements' in results:
+                                        for eid, val in results['elements'].items():
+                                            try:
+                                                revit_id_int = int(eid)
+                                                revit_el_id = ElementId(revit_id_int)
+                                                el = doc.GetElement(revit_el_id)
+                                                
+                                                if not el:
+                                                    continue
+                                                
+                                                cat_id = el.Category.Id.IntegerValue
+                                                if cat_id not in [int(BuiltInCategory.OST_StructuralColumns), 
+                                                                  int(BuiltInCategory.OST_StructuralFraming)]:
+                                                    continue
+                                                
+                                                elem_type = val.get('element_type', 'Unknown')
+                                                elem_name_short = el.Name
+                                                
+                                                # Get max_deflection data
+                                                max_defl = val.get('max_deflection', None)
+                                                if max_defl:
+                                                    dy_max = max_defl.get('delta_y_max_mm', 0.0)
+                                                    dy_station = max_defl.get('delta_y_station', 0.0)
+                                                    dy_dist = max_defl.get('delta_y_distance_mm', 0.0)
+                                                    dz_max = max_defl.get('delta_z_max_mm', 0.0)
+                                                    dz_station = max_defl.get('delta_z_station', 0.0)
+                                                    dz_dist = max_defl.get('delta_z_distance_mm', 0.0)
+                                                    
+                                                    deflection_data.append([
+                                                        str(eid),
+                                                        elem_type,
+                                                        elem_name_short,
+                                                        "{:.4f}".format(dy_max),
+                                                        "{:.3f}".format(dy_station),
+                                                        "{:.0f}".format(dy_dist),
+                                                        "{:.4f}".format(dz_max),
+                                                        "{:.3f}".format(dz_station),
+                                                        "{:.0f}".format(dz_dist)
+                                                    ])
+                                            except Exception:
+                                                continue
+                                    
+                                    if deflection_data:
+                                        deflection_data.sort(key=lambda x: int(x[0]))
+                                        print_center_table(
+                                            output=out,
+                                            data=deflection_data,
+                                            columns=["ID", "Type", "Section", "δy Max (mm)", "Station Y", "Dist Y (mm)", "δz Max (mm)", "Station Z", "Dist Z (mm)"],
+                                            title="📐 Defleksi Maksimum Elemen ({})".format(case_key)
+                                        )
+                                        
+                                        # Find overall max deflection
+                                        max_dy_elem = max(deflection_data, key=lambda x: abs(float(x[3])))
+                                        max_dz_elem = max(deflection_data, key=lambda x: abs(float(x[6])))
+                                        out.print_md("**Defleksi Maksimum Overall:**")
+                                        out.print_md("  - **δy max:** {} mm @ ID {} (station {}, dist {} mm)".format(
+                                            max_dy_elem[3], max_dy_elem[0], max_dy_elem[4], max_dy_elem[5]))
+                                        out.print_md("  - **δz max:** {} mm @ ID {} (station {}, dist {} mm)".format(
+                                            max_dz_elem[6], max_dz_elem[0], max_dz_elem[7], max_dz_elem[8]))
 
                             else:
                                 out.print_md("❌ **Analisis Gagal**")
