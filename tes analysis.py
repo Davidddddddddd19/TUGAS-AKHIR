@@ -12,7 +12,7 @@ G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
 # - End Length Offset: 0.5 (Rigid Zone Factor)
 # - Self-Weight: Auto-Calculate
 # Expected deviation: F1/F2/F3/M1 ~0-2%, M2 ~10-11% (element formulation difference)
-RIGID_END_ZONE_FACTOR = 0.5  # Matches SAP2000 rigid zone factor
+RIGID_END_ZONE_FACTOR = 0  # Matches SAP2000 rigid zone factor
 
 # No empirical correction factors - all set to 1.0
 # Deviation from SAP2000 is expected due to differences in element formulation
