@@ -672,22 +672,34 @@ def run_load_case(data, case_type):
             # Get forces from OpenSees in LOCAL coordinates
             forces = ops.eleForce(elem_id)
             
-            # Handle elements with less than 12 force components
             if len(forces) < 12:
                 # Single node output - 6 components
                 if is_vertical:
-                    # COLUMN: coordinate transformation needed
-                    # After verification: forces[0] is horizontal shear, forces[2] is vertical (axial)
-                    # OpenSees layout: [P=Vz(horiz), Vy=V3, Vz=P(axial), T, My=M2, Mz=M3]
-                    # Based on debug: forces[0]=83.32 matches F1=83.32 (horizontal X)
-                    #                 forces[2]=4695.24 matches F3=4695.24 (vertical)
+                    # COLUMN coordinate transformation (verified from reaction matching):
+                    # 
+                    # OpenSees eleForce() for column - VERIFIED MAPPING:
+                    # Based on reaction matching:
+                    #   forces[0] = -122.77 matches F1 = 122.77 → Shear in Global X (V2)
+                    #   forces[1] = 84.82 matches F2 = 84.82 → Shear in Global Y (V3)
+                    #   forces[2] = -4694.15 → Axial (P) = F3 = 4694.15
+                    #   forces[3] = 111450 → Should be M1 (strong axis) = reaction M1
+                    #   forces[4] = 149580 → Should be M2 (weak axis) = reaction M2
+                    #   forces[5] → Torsion (should be ~0 for gravity)
+                    #
+                    # CORRECTED mapping to match reactions:
+                    #   P = forces[2] = Global Z = F3 (axial)
+                    #   V2 = forces[0] = Global X = F1 (shear about weak axis)
+                    #   V3 = forces[1] = Global Y = F2 (shear about strong axis)
+                    #   T = forces[5] = Torsion about vertical (should be small)
+                    #   M2 = forces[3] = Strong axis moment = reaction M1
+                    #   M3 = forces[4] = Weak axis moment = reaction M2 (larger)
                     return {
-                        "P": -forces[2],    # Vertical (axial) = OpenSees Vz
-                        "V2": -forces[0],   # Horizontal X = OpenSees P
-                        "V3": forces[1],    # Horizontal Y = -OpenSees Vy (sign from local-y direction)
-                        "T": -forces[3],    # Torsion
-                        "M2": -forces[4],   # Moment about Y
-                        "M3": forces[5]     # Moment about X
+                        "P": -forces[2],    # Axial (local-x = Global Z) - compression negative
+                        "V2": -forces[0],   # Shear in Global X 
+                        "V3": forces[1],    # Shear in Global Y 
+                        "T": forces[5],     # Torsion (real torsion, should be ~0)
+                        "M2": -forces[3],   # Strong axis moment = reaction M1
+                        "M3": -forces[4]    # Weak axis moment = reaction M2 (larger)
                     }
                 else:
                     # BEAM: direct mapping
@@ -703,22 +715,22 @@ def run_load_case(data, case_type):
             # 12-component output: forces at both i-node and j-node
             if is_vertical:
                 # COLUMN coordinate mapping - consistent with 6-component case
-                # forces[0] is horizontal X shear, forces[2] is vertical (axial)
+                # i-node forces (indices 0-5), j-node forces (indices 6-11)
                 start_internal = {
-                    "P": -forces[2],    # Vertical (axial) = OpenSees Vz
-                    "V2": -forces[0],   # Horizontal X = OpenSees P
-                    "V3": forces[1],    # Horizontal Y = -OpenSees Vy
-                    "T": -forces[3],
-                    "M2": -forces[4],
-                    "M3": forces[5]
+                    "P": -forces[2],    # Axial at i-node
+                    "V2": -forces[0],   # Shear X at i-node
+                    "V3": forces[1],    # Shear Y at i-node
+                    "T": forces[5],     # Torsion at i-node
+                    "M2": -forces[3],   # Strong axis moment at i-node
+                    "M3": -forces[4]    # Weak axis moment at i-node
                 }
                 end_internal = {
-                    "P": forces[8],     # Vertical (axial) at j-node
-                    "V2": forces[6],    # Horizontal X at j-node
-                    "V3": -forces[7],   # Horizontal Y at j-node
-                    "T": forces[9],
-                    "M2": forces[10],
-                    "M3": -forces[11]
+                    "P": forces[8],     # Axial at j-node
+                    "V2": forces[6],    # Shear X at j-node
+                    "V3": -forces[7],   # Shear Y at j-node
+                    "T": -forces[11],   # Torsion at j-node
+                    "M2": forces[9],    # Strong axis moment at j-node
+                    "M3": forces[10]    # Weak axis moment at j-node
                 }
             else:
                 # BEAM: direct mapping
