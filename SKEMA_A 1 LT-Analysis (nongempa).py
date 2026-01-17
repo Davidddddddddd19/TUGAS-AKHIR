@@ -729,11 +729,11 @@ def run_load_case(data, case_type):
                     #   M3 = forces[4] (My) = major bending moment
                     return {
                         "P": -forces[0],    # Axial
-                        "V2": -forces[2],   # Major shear (vertical)
+                        "V2": -forces[2],   # Major shear (vertical) - matches SAP2000
                         "V3": -forces[1],   # Minor shear (horizontal)
                         "T": -forces[3],    # Torsion
                         "M2": -forces[5],   # Minor moment (about horizontal ~0)
-                        "M3": -forces[4]    # MAJOR moment (bending from gravity)
+                        "M3": forces[4]     # MAJOR moment - SAP2000 convention (negative at ends)
                     }
             
             # 12-component output: forces at both i-node and j-node
@@ -756,14 +756,14 @@ def run_load_case(data, case_type):
                     "M3": forces[10]    # Weak axis moment at j-node
                 }
             else:
-                # BEAM: M2=minor (~0), M3=major bending (SWAPPED from OpenSees output)
+                # BEAM: M2=minor (~0), M3=major bending - SAP2000 convention
                 start_internal = {
                     "P": -forces[0],    # Axial at i-node
                     "V2": -forces[2],   # Major shear (vertical) at i-node
                     "V3": -forces[1],   # Minor shear (horizontal) at i-node
                     "T": -forces[3],    # Torsion at i-node
                     "M2": -forces[5],   # Minor moment (~0) at i-node
-                    "M3": -forces[4]    # MAJOR moment at i-node
+                    "M3": forces[4]     # MAJOR moment at i-node (SAP2000 convention)
                 }
                 end_internal = {
                     "P": forces[6],     # Axial at j-node
@@ -771,7 +771,7 @@ def run_load_case(data, case_type):
                     "V3": forces[7],    # Minor shear (horizontal) at j-node
                     "T": forces[9],     # Torsion at j-node
                     "M2": forces[11],   # Minor moment (~0) at j-node
-                    "M3": forces[10]    # MAJOR moment at j-node
+                    "M3": -forces[10]   # MAJOR moment at j-node (SAP2000 convention)
                 }
             
             # For intermediate stations, use linear interpolation
@@ -833,10 +833,10 @@ def run_load_case(data, case_type):
             # Shear V3(x) = V3_start - (W3_total/L)*x
             v3_x = v3_s - W3_total * ratio
             
-            # With output negation applied, use dM2/dx = +V3 (standard structural relationship)
-            # When V3 is negative, internal M2 increases (before output negation)
-            # M2(x) = M2_start + V3_start*x - (W3_total/L)*x²/2
-            m2_x = m2_s + v3_s * x - (W3_total / length_mm) * (x**2) / 2.0
+            # SAP2000 Convention: dM2/dx = -V3 (NEGATIVE relationship)
+            # When V3 is negative, M2 INCREASES (integration with negative sign)
+            # M2(x) = M2_start - V3_start*x + (W3_total/L)*x²/2
+            m2_x = m2_s - v3_s * x + (W3_total / length_mm) * (x**2) / 2.0
             
             interp["V3"] = v3_x
             interp["M2"] = m2_x
