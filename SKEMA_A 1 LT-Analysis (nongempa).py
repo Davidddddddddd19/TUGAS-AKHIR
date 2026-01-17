@@ -702,20 +702,43 @@ def run_load_case(data, case_type):
                         "M3": -forces[4]    # Weak axis moment = reaction M2 (larger)
                     }
                 else:
-                    # BEAM: direct mapping
+                    # BEAM internal force mapping:
+                    #
+                    # For beam local axes:
+                    #   - local-x = element axis (horizontal, along beam length)
+                    #   - local-y = Global +Z (vertical, perpendicular to floor)
+                    #   - local-z = horizontal perpendicular to beam
+                    #           (Global -Y for X-beam, Global +X for Y-beam)
+                    #
+                    # OpenSees eleForce() returns:
+                    #   forces[0] = P (axial along local-x)
+                    #   forces[1] = Vy (shear along local-y = vertical direction)
+                    #   forces[2] = Vz (shear along local-z = horizontal direction)
+                    #   forces[3] = T (torsion about local-x)
+                    #   forces[4] = My (moment about local-y = about Global Z)
+                    #               -> This is the MAJOR bending from gravity
+                    #   forces[5] = Mz (moment about local-z = about horizontal)
+                    #               -> This is ~0 for gravity-only loading
+                    #
+                    # User convention:
+                    #   M2 = moment about local-y = ~0 for gravity (minor)
+                    #   M3 = moment about local-z = MAJOR bending from gravity
+                    #
+                    # To match user convention, SWAP M2/M3:
+                    #   M2 = forces[5] (Mz) ~0 for gravity (minor)
+                    #   M3 = forces[4] (My) = major bending moment
                     return {
-                        "P": -forces[0],
-                        "V2": -forces[1],
-                        "V3": -forces[2],
-                        "T": -forces[3],
-                        "M2": -forces[4],
-                        "M3": -forces[5]
+                        "P": -forces[0],    # Axial
+                        "V2": -forces[2],   # Major shear (vertical)
+                        "V3": -forces[1],   # Minor shear (horizontal)
+                        "T": -forces[3],    # Torsion
+                        "M2": -forces[5],   # Minor moment (about horizontal ~0)
+                        "M3": -forces[4]    # MAJOR moment (bending from gravity)
                     }
             
             # 12-component output: forces at both i-node and j-node
             if is_vertical:
-                # COLUMN coordinate mapping - consistent with 6-component case
-                # i-node forces (indices 0-5), j-node forces (indices 6-11)
+                # COLUMN coordinate mapping
                 start_internal = {
                     "P": -forces[2],    # Axial at i-node
                     "V2": -forces[0],   # Shear X at i-node
@@ -733,22 +756,22 @@ def run_load_case(data, case_type):
                     "M3": forces[10]    # Weak axis moment at j-node
                 }
             else:
-                # BEAM: direct mapping
+                # BEAM: M2=minor (~0), M3=major bending (SWAPPED from OpenSees output)
                 start_internal = {
-                    "P": -forces[0],
-                    "V2": -forces[1],
-                    "V3": -forces[2],
-                    "T": -forces[3],
-                    "M2": -forces[4],
-                    "M3": -forces[5]
+                    "P": -forces[0],    # Axial at i-node
+                    "V2": -forces[2],   # Major shear (vertical) at i-node
+                    "V3": -forces[1],   # Minor shear (horizontal) at i-node
+                    "T": -forces[3],    # Torsion at i-node
+                    "M2": -forces[5],   # Minor moment (~0) at i-node
+                    "M3": -forces[4]    # MAJOR moment at i-node
                 }
                 end_internal = {
-                    "P": forces[6],
-                    "V2": forces[7],
-                    "V3": forces[8],
-                    "T": forces[9],
-                    "M2": forces[10],
-                    "M3": forces[11]
+                    "P": forces[6],     # Axial at j-node
+                    "V2": forces[8],    # Major shear (vertical) at j-node
+                    "V3": forces[7],    # Minor shear (horizontal) at j-node
+                    "T": forces[9],     # Torsion at j-node
+                    "M2": forces[11],   # Minor moment (~0) at j-node
+                    "M3": forces[10]    # MAJOR moment at j-node
                 }
             
             # For intermediate stations, use linear interpolation
