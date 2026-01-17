@@ -1,1 +1,2057 @@
-
+{
+  "global_pressure_loads": [
+    0.024
+  ],
+  "unit_system": "Revit Converted (mm, N, MPa)",
+  "model_elements": [
+    {
+      "id": 378223,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          -4000,
+          0
+        ],
+        "end_node": [
+          -4000,
+          -4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378225,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          0,
+          0
+        ],
+        "end_node": [
+          -4000,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378226,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          4000,
+          0
+        ],
+        "end_node": [
+          -4000,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378227,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          -4000,
+          0
+        ],
+        "end_node": [
+          0,
+          -4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378228,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          0,
+          0
+        ],
+        "end_node": [
+          0,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378229,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          4000,
+          0
+        ],
+        "end_node": [
+          0,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378230,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          4000,
+          -4000,
+          0
+        ],
+        "end_node": [
+          4000,
+          -4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378231,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          4000,
+          0,
+          0
+        ],
+        "end_node": [
+          4000,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378232,
+      "type": "Column",
+      "family": "UC-Universal Columns-Column : UC305x305x97",
+      "section": {
+        "Area_mm2": 12146.53,
+        "d_mm": 307.9,
+        "b_mm": 305.3,
+        "tf_mm": 15.4,
+        "tw_mm": 9.9,
+        "r_mm": 15.2,
+        "cx_mm": 152.65,
+        "cy_mm": 153.95,
+        "Ix_mm4": 218865819.0,
+        "Iy_mm4": 73060576.0,
+        "Zx_mm3": 1565265.0,
+        "Zy_mm3": 724492.0,
+        "Sx_mm3": 1421668.0,
+        "Sy_mm3": 478615.0,
+        "J_mm4": 805326.0,
+        "Cw_mm6": 1562697226350.0,
+        "Avz_mm2": 3048.21,
+        "Avy_mm2": 7836.0333,
+        "rx_mm": 134.2341,
+        "ry_mm": 77.556
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          4000,
+          4000,
+          0
+        ],
+        "end_node": [
+          4000,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "y_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "z_axis": [
+          -0.0,
+          1.0,
+          0.0
+        ],
+        "rotation_angle_deg": 0.0
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 9.91,
+        "lambda_web": 27.99,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": false,
+        "srpmk_web_ok": true
+      },
+      "loads": null
+    },
+    {
+      "id": 378233,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          -4000,
+          4000
+        ],
+        "end_node": [
+          0,
+          -4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          -0.0,
+          -1.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378235,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          -4000,
+          4000
+        ],
+        "end_node": [
+          4000,
+          -4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          -0.0,
+          -1.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378237,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          0,
+          4000
+        ],
+        "end_node": [
+          0,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          -0.0,
+          -1.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": false,
+        "q_peak_dist": 96.0,
+        "point_load_N": 192000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378239,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          0,
+          4000
+        ],
+        "end_node": [
+          4000,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          -0.0,
+          -1.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": false,
+        "q_peak_dist": 96.0,
+        "point_load_N": 192000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378241,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          4000,
+          4000
+        ],
+        "end_node": [
+          0,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          -0.0,
+          -1.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378243,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          4000,
+          4000
+        ],
+        "end_node": [
+          4000,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          -0.0,
+          -1.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378245,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          -4000,
+          4000
+        ],
+        "end_node": [
+          -4000,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          1.0,
+          -0.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378247,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          -4000,
+          0,
+          4000
+        ],
+        "end_node": [
+          -4000,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          1.0,
+          -0.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378249,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          -4000,
+          4000
+        ],
+        "end_node": [
+          0,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          1.0,
+          -0.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": false,
+        "q_peak_dist": 96.0,
+        "point_load_N": 192000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378251,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          0,
+          0,
+          4000
+        ],
+        "end_node": [
+          0,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          1.0,
+          -0.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": false,
+        "q_peak_dist": 96.0,
+        "point_load_N": 192000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378253,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          4000,
+          -4000,
+          4000
+        ],
+        "end_node": [
+          4000,
+          0,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          1.0,
+          -0.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    },
+    {
+      "id": 378255,
+      "type": "Beam",
+      "family": "UB-Universal Beams : UB305x165x40",
+      "section": {
+        "Area_mm2": 5064.0,
+        "d_mm": 303.4,
+        "b_mm": 165.0,
+        "tf_mm": 10.2,
+        "tw_mm": 6.0,
+        "r_mm": 8.9,
+        "cx_mm": 82.5,
+        "cy_mm": 151.7,
+        "Ix_mm4": 83702368.0,
+        "Iy_mm4": 7641706.0,
+        "Zx_mm3": 613589.0,
+        "Zy_mm3": 141394.0,
+        "Sx_mm3": 551762.0,
+        "Sy_mm3": 92627.0,
+        "J_mm4": 132557.0,
+        "Cw_mm6": 164232183001.0,
+        "Avz_mm2": 1820.4,
+        "Avy_mm2": 2805.0,
+        "rx_mm": 128.5648,
+        "ry_mm": 38.8462
+      },
+      "material": {
+        "Name": "Metal - Steel 43-275",
+        "E_MPa": 205000.0,
+        "Nu": 0.3,
+        "G_MPa": 78846.15,
+        "Rho_kg/mm3": 7.154463110400001e-06,
+        "Alpha_C": 2.16e-05,
+        "Fy_MPa": 275.0,
+        "Fu_MPa": 430.0
+      },
+      "topology": {
+        "start_node": [
+          4000,
+          0,
+          4000
+        ],
+        "end_node": [
+          4000,
+          4000,
+          4000
+        ],
+        "length_mm": 4000
+      },
+      "local_axes": {
+        "x_axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "y_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "z_axis": [
+          1.0,
+          -0.0,
+          -0.0
+        ],
+        "rotation_angle_deg": -90.0,
+        "web_direction": "y_axis"
+      },
+      "design_parameters": {
+        "Kx": 0.65,
+        "Ky": 0.65,
+        "Lx_mm": 4000,
+        "Ly_mm": 4000,
+        "Lb_mm": 4000,
+        "Cb": 1.0,
+        "frame_type": "SRPMK",
+        "end_condition": "fixed-fixed"
+      },
+      "section_classification": {
+        "lambda_flange": 8.09,
+        "lambda_web": 47.17,
+        "lambda_p_flange": 10.38,
+        "lambda_r_flange": 27.3,
+        "lambda_hd_flange": 8.19,
+        "lambda_p_web": 102.66,
+        "lambda_r_web": 155.63,
+        "lambda_hd_web": 66.89,
+        "flange_class": "compact",
+        "web_class": "compact",
+        "srpmk_flange_ok": true,
+        "srpmk_web_ok": true
+      },
+      "loads": {
+        "pattern": "Liveload_Assign",
+        "load_shape_origin": "Triangle",
+        "is_edge": true,
+        "q_peak_dist": 48.0,
+        "point_load_N": 96000.0,
+        "location_ratio": 0.5
+      }
+    }
+  ]
+}
