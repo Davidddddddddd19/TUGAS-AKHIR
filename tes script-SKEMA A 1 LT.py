@@ -43,7 +43,43 @@ BAY_Y_COUNT = 2
 SPAN_X_MM   = 4000.0     
 SPAN_Y_MM   = 4000.0     
 HEIGHT_MM   = 4000.0     
-LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
+
+# ================= FLOOR LOAD CALCULATION =================
+
+# --- Input Parameters ---
+SLAB_THICKNESS = 150.0      # Tebal slab beton (mm) - contoh: 150mm = 0.15m
+SLAB_ADD_THICKNESS = 30   # Tebal spesi/finishing (mm) - contoh: 30mm = 3cm
+
+# --- Constants ---
+CONCRETE_UNIT_WEIGHT_kN_m3 = 24.0    # Berat jenis beton bertulang (kN/m³)
+MORTAR_WEIGHT_kg_m2_cm = 21.0        # Berat spesi per cm tebal (kg/m²/cm)
+GRAVITY_m_s2 = 9.81                   # Percepatan gravitasi (m/s²)
+
+# --- Dead Load (DL) Calculation ---
+# DL = Tebal_slab(m) × Berat_jenis_beton(kN/m³)
+# Contoh: 0.15m × 24 kN/m³ = 3.6 kN/m²
+# Konversi ke MPa: kN/m² × 0.001 = MPa
+slab_thickness_m = SLAB_THICKNESS / 1000.0  # Convert mm to m
+DL_kN_m2 = slab_thickness_m * CONCRETE_UNIT_WEIGHT_kN_m3
+DEAD_LOAD_PRESSURE = DL_kN_m2 * 0.001  # MPa (N/mm²)
+
+# --- Additional Dead Load (ADL) Calculation ---
+# ADL = Tebal_spesi(cm) × Berat_spesi(kg/m²/cm)
+# Contoh: 3cm × 21 kg/m²/cm = 63 kg/m²
+# Konversi ke kN: kg/m² × g / 1000 = kN/m²
+# Konversi ke MPa: kN/m² × 0.001 = MPa
+add_thickness_cm = SLAB_ADD_THICKNESS / 10.0  # Convert mm to cm
+ADL_kg_m2 = add_thickness_cm * MORTAR_WEIGHT_kg_m2_cm
+ADL_kN_m2 = ADL_kg_m2 * GRAVITY_m_s2 / 1000.0  # Convert kg to kN
+ADD_LOAD_PRESSURE = ADL_kN_m2 * 0.001  # MPa (N/mm²)
+
+# --- Live Load Pressure ---
+LIVE_LOAD_PRESSURE = 0.024 # 2.4 kPa
+
+# --- Total Slab Pressure ---
+SLAB_PRESSURE = round(LIVE_LOAD_PRESSURE + DEAD_LOAD_PRESSURE + ADD_LOAD_PRESSURE, 5)
+
+# ============================================================
 
 COLUMN_ROTATION_DEG = 0
 
@@ -151,7 +187,7 @@ def calculate_beam_distributed_load(start_node, end_node):
 
     # 4. Hitung Beban Puncak Distribusi (q_peak)
     #    q_peak = Pressure (MPa) * Lebar Tributary Max (mm)
-    w = LOAD_LIVE_OFFICE_MPA # N/mm2
+    w = SLAB_PRESSURE # N/mm2
     
     if is_one_way and is_long_span:
         tributary_width = Lx / 2.0 # Persegi panjang setengah bentang
@@ -298,18 +334,18 @@ def get_section_properties(element, doc):
     Extract section geometric parameters and calculate section properties manually.
     For I-sections (Wide Flange, UC, UB, etc.):
     - Extracts: d, b, tf, tw, r (web fillet), centroids
-    - Calculates: Area, Ix, Iy, Zx, Zy, Sx, Sy, J, Cw
+    - Calculates: Area, Iz, Iy, Zz, Zy, Sz, Sy, J, Cw
     """
     props = {
         "Area_mm2": 0.0, "d_mm": 0.0, "b_mm": 0.0, "tf_mm": 0.0, "tw_mm": 0.0,
         "r_mm": 0.0,  # Web fillet radius
         "cx_mm": 0.0, "cy_mm": 0.0,  # Centroids
-        "Ix_mm4": 0.0, "Iy_mm4": 0.0, 
-        "Zx_mm3": 0.0, "Zy_mm3": 0.0,  # Plastic modulus
-        "Sx_mm3": 0.0, "Sy_mm3": 0.0,  # Elastic modulus
+        "Iz_mm4": 0.0, "Iy_mm4": 0.0, 
+        "Zz_mm3": 0.0, "Zy_mm3": 0.0,  # Plastic modulus
+        "Sz_mm3": 0.0, "Sy_mm3": 0.0,  # Elastic modulus
         "J_mm4": 0.0, "Cw_mm6": 0.0,   # Torsion constant, Warping constant
         "Avz_mm2": 0.0, "Avy_mm2": 0.0, # Shear Areas
-        "rx_mm": 0.0, "ry_mm": 0.0      # Radii of Gyration
+        "rz_mm": 0.0, "ry_mm": 0.0      # Radii of Gyration
     }
     try:
         elem_type = doc.GetElement(element.GetTypeId())
@@ -384,11 +420,11 @@ def get_section_properties(element, doc):
                 props["Area_mm2"] = round(Area_calc, 2)
                 
                 # -------------------------------------------------------
-                # MOMENT OF INERTIA - STRONG AXIS (Ix) - SAP2000 Compatible
-                # Ix = (b*d^3 - (b-tw)*(d-2*tf)^3) / 12
+                # MOMENT OF INERTIA - STRONG AXIS (Iz) - SAP2000 Compatible
+                # Iz = (b*d^3 - (b-tw)*(d-2*tf)^3) / 12
                 # -------------------------------------------------------
-                Ix = (b * d**3 - (b - tw) * h_web**3) / 12.0
-                props["Ix_mm4"] = round(Ix, 0)
+                Iz = (b * d**3 - (b - tw) * h_web**3) / 12.0
+                props["Iz_mm4"] = round(Iz, 0)
                 
                 # -------------------------------------------------------
                 # MOMENT OF INERTIA - WEAK AXIS (Iy) - SAP2000 Compatible
@@ -398,23 +434,23 @@ def get_section_properties(element, doc):
                 props["Iy_mm4"] = round(Iy, 0)
                 
                 # -------------------------------------------------------
-                # ELASTIC SECTION MODULUS (Sx, Sy)
-                # Sx = Ix / (d/2) = 2*Ix/d
+                # ELASTIC SECTION MODULUS (Sz, Sy)
+                # Sz = Iz / (d/2) = 2*Iz/d
                 # Sy = Iy / (b/2) = 2*Iy/b
                 # -------------------------------------------------------
                 if d > 0:
-                    props["Sx_mm3"] = round(props["Ix_mm4"] / (d / 2.0), 0)
+                    props["Sz_mm3"] = round(props["Iz_mm4"] / (d / 2.0), 0)
                 if b > 0:
                     props["Sy_mm3"] = round(props["Iy_mm4"] / (b / 2.0), 0)
                 
                 # -------------------------------------------------------
-                # PLASTIC SECTION MODULUS (Zx, Zy)
+                # PLASTIC SECTION MODULUS (Zz, Zy)
                 # For I-section:
-                # Zx = b*tf*(d-tf) + tw*(d-2*tf)^2/4
+                # Zz = b*tf*(d-tf) + tw*(d-2*tf)^2/4
                 # Zy = b^2*tf/2 + (d-2*tf)*tw^2/4
                 # -------------------------------------------------------
-                Zx = b * tf * (d - tf) + tw * h_web**2 / 4.0
-                props["Zx_mm3"] = round(Zx, 0)
+                Zz = b * tf * (d - tf) + tw * h_web**2 / 4.0
+                props["Zz_mm3"] = round(Zz, 0)
                 
                 Zy = (b**2 * tf) / 2.0 + (h_web * tw**2) / 4.0
                 props["Zy_mm3"] = round(Zy, 0)
@@ -447,12 +483,12 @@ def get_section_properties(element, doc):
                 props["Avy_mm2"] = round(2 * b * tf * (5.0/6.0), 4)
 
                 # -------------------------------------------------------
-                # RADIUS OF GYRATION (rx, ry)
-                # rx = sqrt(Ix / A)
+                # RADIUS OF GYRATION (rz, ry)
+                # rz = sqrt(Iz / A)
                 # ry = sqrt(Iy / A)
                 # -------------------------------------------------------
                 if props["Area_mm2"] > 0:
-                    props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 4)
+                    props["rz_mm"] = round(math.sqrt(props["Iz_mm4"] / props["Area_mm2"]), 4)
                     props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 4)
             
             return props
@@ -493,20 +529,20 @@ def get_section_properties(element, doc):
                 A_fillets = (4 - math.pi) * r * r if r > 0 else 0.0
                 props["Area_mm2"] = round(2*b*tf + h_web*tw + A_fillets, 2)
             
-            # Ix
-            Ix = (b * d**3 - (b - tw) * h_web**3) / 12.0
-            props["Ix_mm4"] = round(Ix, 0)
+            # Iz
+            Iz = (b * d**3 - (b - tw) * h_web**3) / 12.0
+            props["Iz_mm4"] = round(Iz, 0)
             
             # Iy
             Iy = (2 * tf * b**3 + h_web * tw**3) / 12.0
             props["Iy_mm4"] = round(Iy, 0)
             
             # Elastic modulus
-            if d > 0: props["Sx_mm3"] = round(Ix / (d/2), 0)
+            if d > 0: props["Sz_mm3"] = round(Iz / (d/2), 0)
             if b > 0: props["Sy_mm3"] = round(Iy / (b/2), 0)
             
             # Plastic modulus
-            props["Zx_mm3"] = round(b*tf*(d-tf) + tw*h_web**2/4, 0)
+            props["Zz_mm3"] = round(b*tf*(d-tf) + tw*h_web**2/4, 0)
             props["Zy_mm3"] = round(b**2*tf/2 + h_web*tw**2/4, 0)
             
             # Torsional constant (SAP2000 compatible with K factor)
@@ -526,12 +562,12 @@ def get_section_properties(element, doc):
             props["Avy_mm2"] = round(2 * b * tf * (5.0/6.0), 4)
 
             # -------------------------------------------------------
-            # RADIUS OF GYRATION (rx, ry)
-            # rx = sqrt(Ix / A)
+            # RADIUS OF GYRATION (rz, ry)
+            # rz = sqrt(Iz / A)
             # ry = sqrt(Iy / A)
             # -------------------------------------------------------
             if props["Area_mm2"] > 0:
-                props["rx_mm"] = round(math.sqrt(props["Ix_mm4"] / props["Area_mm2"]), 4)
+                props["rz_mm"] = round(math.sqrt(props["Iz_mm4"] / props["Area_mm2"]), 4)
                 props["ry_mm"] = round(math.sqrt(props["Iy_mm4"] / props["Area_mm2"]), 4)
             
             # Set default centroids for symmetric section
@@ -1417,8 +1453,8 @@ try:
 
     # --- B. SET GLOBALS UNTUK FUNGSI HITUNGAN ---
     # 1. Load Pressure Global
-    try: globals()['LOAD_LIVE_OFFICE_MPA'] = float(LOAD_LIVE_OFFICE_MPA) 
-    except: globals()['LOAD_LIVE_OFFICE_MPA'] = 0.0
+    try: globals()['SLAB_PRESSURE'] = float(SLAB_PRESSURE) 
+    except: globals()['SLAB_PRESSURE'] = 0.0
 
     # 2. Grid Spacing
     try: globals()['SPAN_X_MM'] = float(SPAN_X_MM)
@@ -1476,7 +1512,7 @@ try:
     # --- D. SAVE JSON (STRUKTUR FINAL) ---
     final_output = {
         # DISINI LIST GLOBALNYA
-        "global_pressure_loads": [globals()['LOAD_LIVE_OFFICE_MPA']], 
+        "global_pressure_loads": [globals()['SLAB_PRESSURE']], 
         
         "unit_system": "Revit Converted (mm, N, MPa)",
         "model_elements": final_elements_list
@@ -1490,7 +1526,7 @@ try:
         
     json_success = True
     print("✅ Export Selesai.")
-    print("   Global Load List: [ {} MPa ]".format(globals()['LOAD_LIVE_OFFICE_MPA']))
+    print("   Global Load List: [ {} MPa ]".format(globals()['SLAB_PRESSURE']))
     print("   Total Elements: {}".format(len(final_elements_list)))
 
 except Exception as e:
