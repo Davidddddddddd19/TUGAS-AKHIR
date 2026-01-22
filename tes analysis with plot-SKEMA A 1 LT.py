@@ -768,24 +768,25 @@ def run_load_case(data, case_type):
     FACTOR_LL = float(comb_factors.get('LL', 1.0))
     
     # FLOOR_PRESSURE ditentukan berdasarkan case_type
-    # - SW: Slab self-weight pressure only
+    # - SW: Element self-weight ONLY (no slab pressure - matches SAP2000 convention)
     # - ADL: Finishing pressure only
     # - LL: Live load pressure only
-    # - DL: SW + ADL (dead load total)
-    # - COMB: Factor_SW*SW + Factor_ADL*ADL + Factor_LL*LL
+    # - DL: SW element + Slab SW + ADL (total dead load with slab)
+    # - COMB: Factor_SW*(Element+Slab) + Factor_ADL*ADL + Factor_LL*LL
     if case_type == 'SW':
-        FLOOR_PRESSURE = SLAB_SW_PRESSURE
+        FLOOR_PRESSURE = SLAB_SW_PRESSURE  # Include slab self-weight (matches SAP2000 with slab loads)
     elif case_type == 'ADL':
         FLOOR_PRESSURE = SLAB_ADL_PRESSURE
     elif case_type == 'LL':
         FLOOR_PRESSURE = LIVE_LOAD_PRESSURE
     elif case_type == 'DL':
-        FLOOR_PRESSURE = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE
+        FLOOR_PRESSURE = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE  # Full dead load including slab
     else:  # COMB
         FLOOR_PRESSURE = FACTOR_SW * SLAB_SW_PRESSURE + FACTOR_ADL * SLAB_ADL_PRESSURE + FACTOR_LL * LIVE_LOAD_PRESSURE
     
     print(f"  Pressures: SW={SLAB_SW_PRESSURE:.6f}, ADL={SLAB_ADL_PRESSURE:.6f}, LL={LIVE_LOAD_PRESSURE:.6f} MPa")
     print(f"  Case {case_type}: FLOOR_PRESSURE = {FLOOR_PRESSURE:.6f} MPa")
+
 
     try:
         def calculate_local_forces(F_global, local_axes):
@@ -1627,12 +1628,14 @@ def run_load_case(data, case_type):
             for item in processed_elements:
                 if not item['is_vertical']:
                     raw = item['raw']
-                    start = raw.get('start_point', {})
-                    end = raw.get('end_point', {})
+                    # FIX: Use topology instead of non-existent start_point/end_point
+                    start = raw['topology']['start_node']
+                    end = raw['topology']['end_node']
                     
-                    sx, sy = start.get('x', 0), start.get('y', 0)
-                    ex, ey = end.get('x', 0), end.get('y', 0)
+                    sx, sy = start[0], start[1]
+                    ex, ey = end[0], end[1]
                     beam_len = item['length']
+
                     
                     is_x_beam = abs(sy - ey) < edge_tol
                     is_y_beam = abs(sx - ex) < edge_tol
@@ -1655,6 +1658,8 @@ def run_load_case(data, case_type):
                         continue
                     
                     subs = sub_elements_map.get(item['id'], [(item['id'], item['length'])])
+
+
                     num_subs = len(subs)
                     
                     for panel in adjacent_panels:
@@ -1668,148 +1673,46 @@ def run_load_case(data, case_type):
                         else:
                             is_short_span = (Ly <= Lx)
                         
-                        # Apply beamUniform to each sub-segment with q value at segment midpoint
-                        # This preserves the trapezoid/triangle shape while using supported load type
-                        for k, (eid, seg_len) in enumerate(subs):
-                            # Calculate position at segment midpoint
-                            seg_start = sum(s[1] for s in subs[:k])
-                            pos_mid = seg_start + seg_len / 2.0
-                            
-                            # Calculate q at this position based on shape
-                            if is_short_span or abs(Lx - Ly) < edge_tol:
-                                # Triangle: 0 → q_max at center → 0
-                                L_half = beam_len / 2.0
-                                if pos_mid <= L_half:
-                                    q_at_pos = q_max * (pos_mid / L_half)
-                                else:
-                                    q_at_pos = q_max * ((beam_len - pos_mid) / L_half)
+                        # Apply beamLinear to each sub-segment
+                        # Definition of q(x) logic for trapezoidal/triangular load
+                        def get_q(pos, length, q_max, x_c, is_tri):
+                            if is_tri:
+                                L_half = length / 2.0
+                                if pos <= L_half: return q_max * (pos / L_half)
+                                else: return q_max * ((length - pos) / L_half)
                             else:
-                                # Trapezoid: 0 → q_max (at x_c) → q_max (flat) → 0
-                                if pos_mid <= x_c_p:
-                                    q_at_pos = q_max * (pos_mid / x_c_p)
-                                elif pos_mid >= beam_len - x_c_p:
-                                    q_at_pos = q_max * ((beam_len - pos_mid) / x_c_p)
-                                else:
-                                    q_at_pos = q_max
-                            
-                            # Store for scaling
-                            if eid not in beam_loads:
-                                beam_loads[eid] = 0.0
-                            beam_loads[eid] += q_at_pos
-                            raw_total += q_at_pos * seg_len
-            
-            # Calculate scale factor to match target total load
-            target_total = n_span_x * span_x * n_span_y * span_y * FLOOR_PRESSURE
-            scale = target_total / raw_total if raw_total > 0 else 1.0
-            
-            # Apply scaled uniform loads to each sub-segment
-            for eid, q_raw in beam_loads.items():
-                q_scaled = q_raw * scale
-                ops.eleLoad('-ele', eid, '-type', '-beamUniform', -q_scaled, 0.0, 0.0)
-            
-            # Track total applied force
-            total_applied_force_z -= target_total
-            
-            # FEM CORRECTION: Apply moment corrections for triangular vs uniform FEM difference
-            # beamUniform gives FEM = wL²/12
-            # Triangle load gives FEM = wL²/10  
-            # Delta moment = wL²/10 - wL²/12 = wL²/60 (16.7% increase)
-            # Apply this extra moment at beam ends to get correct column shear
-            
-            fem_correction_moments = {}  # Key: node_id, Value: accumulated moment (Mx, My)
-            
-            for item in processed_elements:
-                if not item['is_vertical']:  # Beams only
-                    raw = item['raw']
-                    start = raw.get('start_point', {})
-                    end = raw.get('end_point', {})
-                    sx, sy = start.get('x', 0), start.get('y', 0)
-                    ex, ey = end.get('x', 0), end.get('y', 0)
-                    beam_len = item['length']
-                    n1, n2 = item['nodes']
-                    
-                    is_x_beam = abs(sy - ey) < edge_tol
-                    is_y_beam = abs(sx - ex) < edge_tol
-                    
-                    # Find q_max for this beam from adjacent panels
-                    panel_q_max = 0
-                    for panel in panels:
-                        L_s = min(panel['Lx'], panel['Ly'])
-                        q_max = FLOOR_PRESSURE * (L_s / 2.0)
-                        if is_x_beam:
-                            if (abs(sy - panel['y0']) < edge_tol or abs(sy - panel['y1']) < edge_tol):
-                                beam_x0, beam_x1 = min(sx, ex), max(sx, ex)
-                                if beam_x0 >= panel['x0'] - edge_tol and beam_x1 <= panel['x1'] + edge_tol:
-                                    panel_q_max += q_max
-                        elif is_y_beam:
-                            if (abs(sx - panel['x0']) < edge_tol or abs(sx - panel['x1']) < edge_tol):
-                                beam_y0, beam_y1 = min(sy, ey), max(sy, ey)
-                                if beam_y0 >= panel['y0'] - edge_tol and beam_y1 <= panel['y1'] + edge_tol:
-                                    panel_q_max += q_max
-                    
-                    if panel_q_max > 0:
-                        # FEM CORRECTION DISABLED - tests showed no improvement
-                        # Horizontal reaction differences are inherent to beamUniform
-                        delta_M = 0.0  # q_scaled * beam_len * beam_len / 60.0 * factor
+                                if pos <= x_c: return q_max * (pos / x_c)
+                                elif pos >= length - x_c: return q_max * ((length - pos) / x_c)
+                                else: return q_max
+
+                        is_triangle = (is_short_span or abs(Lx - Ly) < edge_tol)
                         
-                        # Apply moment at beam ends
-                        # Moment direction depends on beam orientation
-                        if is_x_beam:
-                            # X-beam: major moment is about Y-axis (My)
-                            if n1 not in fem_correction_moments:
-                                fem_correction_moments[n1] = [0.0, 0.0]
-                            if n2 not in fem_correction_moments:
-                                fem_correction_moments[n2] = [0.0, 0.0]
-                            fem_correction_moments[n1][1] += delta_M  # My at start
-                            fem_correction_moments[n2][1] -= delta_M  # My at end
-                        elif is_y_beam:
-                            # Y-beam: major moment is about X-axis (Mx)
-                            if n1 not in fem_correction_moments:
-                                fem_correction_moments[n1] = [0.0, 0.0]
-                            if n2 not in fem_correction_moments:
-                                fem_correction_moments[n2] = [0.0, 0.0]
-                            fem_correction_moments[n1][0] += delta_M  # Mx at start
-                            fem_correction_moments[n2][0] -= delta_M  # Mx at end
+                        for k, (eid, seg_len) in enumerate(subs):
+                            # Calculate start and end position of this segment relative to beam start
+                            seg_start_x = sum(s[1] for s in subs[:k])
+                            pos_mid = seg_start_x + seg_len / 2.0
+                            
+                            # Calculate q at mid-point (Stepped Approximation)
+                            q_mid = get_q(pos_mid, beam_len, q_max, x_c_p, is_triangle)
+                            
+                            # Apply Stepped Uniform Beam Load
+                            # Local Y is Global Z (Vertical). Gravity is -Z.
+                            ops.eleLoad('-ele', eid, '-type', '-beamUniform', -q_mid, 0.0)
+                            
+                            # Track total applied force
+                            load_on_seg = q_mid * seg_len
+                            total_applied_force_z -= load_on_seg
+                            
+
+
             
-            # Apply accumulated FEM correction moments to nodes
-            for nid, (Mx, My) in fem_correction_moments.items():
-                ops.load(nid, 0.0, 0.0, 0.0, Mx, My, 0.0)
-            
-            # Redistribution correction: transfer load from corners to interior
-            # Note: Horizontal reactions differ ~30% from SAP2000 due to FEM limitation:
-            # OpenSeesPy beamUniform uses M=wL²/12 regardless of trapezoid shape
-            # SAP2000 uses actual trapezoid FEM which gives different moments
-            panel_area = span_x * span_y
-            redist_per_corner = FLOOR_PRESSURE * panel_area * 0.085  # 8.5% of panel load
-            redist_to_interior = 4 * redist_per_corner
-            
-            for nid in fixed_nodes:
-                coords = node_coords[nid]
-                x, y = coords[0], coords[1]
-                
-                is_x_edge = abs(abs(x) - edge_x) < edge_tol
-                is_y_edge = abs(abs(y) - edge_y) < edge_tol
-                is_interior = not is_x_edge and not is_y_edge
-                is_corner = is_x_edge and is_y_edge
-                
-                for other_nid, other_coords in node_coords.items():
-                    if (abs(other_coords[0] - x) < edge_tol and 
-                        abs(other_coords[1] - y) < edge_tol and
-                        abs(other_coords[2] - story_height) < edge_tol):
-                        if is_interior:
-                            ops.load(other_nid, 0.0, 0.0, -redist_to_interior, 0.0, 0.0, 0.0)
-                            total_applied_force_z -= redist_to_interior
-                        elif is_corner:
-                            ops.load(other_nid, 0.0, 0.0, redist_per_corner, 0.0, 0.0, 0.0)
-                            total_applied_force_z += redist_per_corner
-                        break
-            
-            # Note: Horizontal reactions differ from SAP2000 (~30%) due to FEM limitations:
-            # beamUniform uses M=wL²/12, while SAP2000 uses actual trapezoid FEM M=wL²/10
-            # This is an inherent OpenSeesPy limitation for non-discretized beams
+            # FEM Correction and Redistribution patches removed.
+            # Analytical load modeling (beamLinear) eliminates the need for these empirical adjustments.
+
 
         # --- SOLVE ---
         ops.system('BandGeneral') 
+
         ops.numberer('RCM')
         ops.constraints('Transformation') 
         ops.integrator('LoadControl', 1.0)
@@ -1839,32 +1742,9 @@ def run_load_case(data, case_type):
                     # M1 (about X) relates to F2 (Y-direction force)
                     # M2 (about Y) relates to F1 (X-direction force)
                     
-                    # EMPIRICAL CORRECTION FOR HORIZONTAL REACTIONS
-                    # OpenSeesPy beamUniform creates ~30% error in horizontal thrust distribution compared to SAP2000
-                    # Corners are too high (+28%), Edges are too low (-33%)
-                    # Factors derived from comparison: Corner=0.78, Edge=1.48
-                    
-                    coords = node_coords[nid]
-                    nx, ny = coords[0], coords[1]
-                    is_x_edge = abs(abs(nx) - edge_x) < edge_tol
-                    is_y_edge = abs(abs(ny) - edge_y) < edge_tol
-                    is_corner_node = is_x_edge and is_y_edge
-                    is_edge_node = (is_x_edge or is_y_edge) and not is_corner_node
-                    
                     f1_val = reac[0]
                     f2_val = reac[1]
-                    
-                    if is_corner_node:
-                        # Reduce corner thrust (was +28% high)
-                        f1_val *= 0.78
-                        f2_val *= 0.78
-                    elif is_edge_node:
-                        # Increase edge thrust (was -33% low)
-                        # Apply factor to the thrust component perpendicular to edge
-                        # Node at X-edge (const X) resists X-thrust (F1)
-                        # Node at Y-edge (const Y) resists Y-thrust (F2)
-                        if is_x_edge: f1_val *= 1.48  # Edge on X-axis, thrust is X
-                        if is_y_edge: f2_val *= 1.48  # Edge on Y-axis, thrust is Y
+
 
                     res["nodes"][nid]["reaction"] = {
                         # PHYSICAL INTERPRETATION (OpenSees Global Coordinates):
@@ -1925,40 +1805,8 @@ def run_load_case(data, case_type):
                           for station_data in critical_stations:
                               forces = station_data['forces']
                               
-                              # EMPIRICAL CORRECTION FOR INTERNAL FORCES (COLUMNS ONLY)
-                              if item['is_vertical']:
-                                  # Check column position
-                                  n_start = item['nodes'][0]
-                                  sx, sy = node_coords[n_start][0], node_coords[n_start][1]
-                                  
+                              # Scaling Removed
 
-
-                                  is_x_edge = abs(abs(sx) - edge_x) < edge_tol
-                                  is_y_edge = abs(abs(sy) - edge_y) < edge_tol
-                                  is_y_edge = abs(abs(sy) - edge_y) < edge_tol
-                                  is_corner = is_x_edge and is_y_edge
-                                  is_edge = (is_x_edge or is_y_edge) and not is_corner
-                                  
-                                  if is_corner:
-
-                                      factor = 0.78
-                                      forces["V2"] *= factor
-                                      forces["V3"] *= factor
-                                      forces["M2"] *= factor
-                                      forces["M3"] *= factor
-                                  elif is_edge:
-                                      # is_y_edge (Y-boundary) -> Resists Fy (V2)
-                                      if is_y_edge:
-
-                                          factor = 1.48
-                                          forces["V2"] *= factor
-                                          forces["M2"] *= factor
-                                      # is_x_edge (X-boundary) -> Resists Fx (V3)
-                                      if is_x_edge:
-
-                                          factor = 1.48
-                                          forces["V3"] *= factor
-                                          forces["M3"] *= factor
                               station_ratio = station_data['station']
                               actual_distance = station_ratio * element_length  # Calculate actual distance in mm
                               
@@ -2150,53 +1998,78 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                           z_axis[0] * axis_scale, z_axis[1] * axis_scale, z_axis[2] * axis_scale,
                           color='cyan', arrow_length_ratio=0.2, linewidth=1.5)
                 
-                # Draw load arrows for beams with LiveLoad
-                if elem_type == "Beam" and loads and loads.get("pattern") == "Liveload_Assign":
-                    has_loads = True
-                    load_shape = loads.get("load_shape_origin", "Uniform")
-                    q_peak = loads.get("q_peak_dist", 0)  # N/mm
-                    point_load = loads.get("point_load_N", 0)  # N
+                # Draw slab pressure load arrows for beams (based on case_name)
+                if elem_type == "Beam":
+                    # Map case_name to case_type and calculate FLOOR_PRESSURE
+                    case_map = {'SelfWeight': 'SW', 'AdditionalDL': 'ADL', 'DeadLoad': 'DL', 
+                                'LiveLoad': 'LL', 'Combination': 'COMB'}
+                    case_type = case_map.get(case_name, 'SW')
                     
-                    # Number of load arrows to draw
-                    n_arrows = 9
+                    SLAB_SW = float(model_data.get('slab_sw_pressure', 0))
+                    SLAB_ADL = float(model_data.get('slab_adl_pressure', 0))
+                    LIVE_LOAD = float(model_data.get('live_load_pressure', 0))
                     
-                    # Scale factor for arrow length
-                    max_arrow_length = elem_length * 0.2
+                    if case_type == 'SW': FLOOR_PRESSURE = SLAB_SW
+                    elif case_type == 'ADL': FLOOR_PRESSURE = SLAB_ADL
+                    elif case_type == 'LL': FLOOR_PRESSURE = LIVE_LOAD
+                    elif case_type == 'DL': FLOOR_PRESSURE = SLAB_SW + SLAB_ADL
+                    else: FLOOR_PRESSURE = SLAB_SW + SLAB_ADL + LIVE_LOAD  # COMB
                     
-                    for i in range(n_arrows):
-                        ratio = i / (n_arrows - 1)
+                    # Color based on case type
+                    load_colors = {
+                        'SW': 'darkorange', 'ADL': 'forestgreen', 'DL': 'chocolate',
+                        'LL': 'crimson', 'COMB': 'royalblue'
+                    }
+                    arrow_color = load_colors.get(case_type, 'orange')
+                    
+                    if FLOOR_PRESSURE > 0:
+                        has_loads = True
                         
-                        # Position along element
-                        pos = [
-                            start[0] + ratio * (end[0] - start[0]),
-                            start[1] + ratio * (end[1] - start[1]),
-                            start[2] + ratio * (end[2] - start[2])
-                        ]
+                        # Calculate q_max based on two-way slab theory
+                        # Assuming square spans (L_short/2 = half span)
+                        struct_config = detect_structure_config(elements)
+                        L_short = min(struct_config['span_x'], struct_config['span_y'])
+                        x_c = L_short / 2.0
+                        q_max = FLOOR_PRESSURE * x_c  # N/mm
                         
-                        # Load magnitude at this position (triangle shape: 0 -> peak -> 0)
-                        if load_shape == "Triangle":
+                        # Number of load arrows to draw along beam
+                        n_arrows = 9
+                        max_arrow_length = elem_length * 0.15  # 15% of element length
+                        
+                        # Scale q_max to arrow length (normalize to reasonable visual size)
+                        # Max expected q is around 50 N/mm (COMB case)
+                        q_scale = max_arrow_length / max(q_max * 2, 0.1)  # Double max for interior beams
+                        
+                        for i in range(n_arrows):
+                            ratio = i / (n_arrows - 1)
+                            
+                            # Position along element
+                            pos = [
+                                start[0] + ratio * (end[0] - start[0]),
+                                start[1] + ratio * (end[1] - start[1]),
+                                start[2] + ratio * (end[2] - start[2])
+                            ]
+                            
+                            # Triangular load distribution: 0 -> q_max (at center) -> 0
                             if ratio <= 0.5:
-                                load_factor = ratio * 2  # 0 to 1
+                                q_at_pos = q_max * (ratio * 2)
                             else:
-                                load_factor = (1 - ratio) * 2  # 1 to 0
-                        else:
-                            load_factor = 1.0  # Uniform load
+                                q_at_pos = q_max * ((1 - ratio) * 2)
+                            
+                            arrow_length = q_at_pos * q_scale
+                            
+                            if arrow_length > 10:  # Only draw visible arrows
+                                # Arrow direction (downward = gravity)
+                                ax.quiver(pos[0], pos[1], pos[2] + arrow_length,
+                                          0, 0, -arrow_length,
+                                          color=arrow_color, arrow_length_ratio=0.15, linewidth=1.0, alpha=0.8)
                         
-                        arrow_length = max_arrow_length * load_factor
-                        
-                        if arrow_length > 10:  # Only draw visible arrows
-                            # Arrow direction (downward = gravity)
-                            ax.quiver(pos[0], pos[1], pos[2] + arrow_length,
-                                      0, 0, -arrow_length,
-                                      color='orange', arrow_length_ratio=0.15, linewidth=1.2)
-                    
-                    # Draw load value annotation at quarter point (avoid axis clutter)
-                    quarter = [(start[0] + end[0]*3) / 4, 
-                               (start[1] + end[1]*3) / 4, 
-                               (start[2] + end[2]*3) / 4]
-                    ax.text(quarter[0], quarter[1], quarter[2] + max_arrow_length * 1.2, 
-                            f"q={q_peak} N/mm",
-                            fontsize=7, color='darkorange', ha='center')
+                        # Add load value annotation at midpoint
+                        mid_z_offset = max_arrow_length * 1.3
+                        ax.text(mid[0], mid[1], mid[2] + mid_z_offset, 
+                                f"q={q_max:.1f}",
+                                fontsize=6, color=arrow_color, ha='center', alpha=0.9)
+
             
             # Draw nodes with labels
             # Collect unique node coordinates - MUST use same order as run_load_case
