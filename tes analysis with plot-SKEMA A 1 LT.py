@@ -2025,20 +2025,62 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                     if FLOOR_PRESSURE > 0:
                         has_loads = True
                         
-                        # Calculate q_max based on two-way slab theory
-                        # Assuming square spans (L_short/2 = half span)
+                        # Get structure configuration
                         struct_config = detect_structure_config(elements)
-                        L_short = min(struct_config['span_x'], struct_config['span_y'])
+                        span_x = struct_config['span_x']
+                        span_y = struct_config['span_y']
+                        n_span_x = struct_config['n_span_x']
+                        n_span_y = struct_config['n_span_y']
+                        edge_x = n_span_x * span_x / 2.0
+                        edge_y = n_span_y * span_y / 2.0
+                        panel_tol = 10.0
+                        
+                        # Build panels list (same as load application)
+                        panels = []
+                        for ix in range(n_span_x):
+                            for iy in range(n_span_y):
+                                x0 = -edge_x + ix * span_x
+                                x1 = x0 + span_x
+                                y0 = -edge_y + iy * span_y
+                                y1 = y0 + span_y
+                                panels.append({'x0': x0, 'x1': x1, 'y0': y0, 'y1': y1})
+                        
+                        # Detect beam-panel adjacency (using X/Y only, ignoring Z)
+                        sx, sy = start[0], start[1]
+                        ex, ey = end[0], end[1]
+                        is_x_beam = abs(sy - ey) < panel_tol
+                        is_y_beam = abs(sx - ex) < panel_tol
+                        
+                        adjacent_panels = []
+                        for panel in panels:
+                            if is_x_beam:
+                                if abs(sy - panel['y0']) < panel_tol or abs(sy - panel['y1']) < panel_tol:
+                                    beam_x0, beam_x1 = min(sx, ex), max(sx, ex)
+                                    if beam_x0 >= panel['x0'] - panel_tol and beam_x1 <= panel['x1'] + panel_tol:
+                                        adjacent_panels.append(panel)
+                            elif is_y_beam:
+                                if abs(sx - panel['x0']) < panel_tol or abs(sx - panel['x1']) < panel_tol:
+                                    beam_y0, beam_y1 = min(sy, ey), max(sy, ey)
+                                    if beam_y0 >= panel['y0'] - panel_tol and beam_y1 <= panel['y1'] + panel_tol:
+                                        adjacent_panels.append(panel)
+                        
+                        n_adj = len(adjacent_panels)
+                        if n_adj == 0:
+                            n_adj = 1  # Fallback
+                        
+                        # Calculate q_max based on two-way slab theory
+                        L_short = min(span_x, span_y)
                         x_c = L_short / 2.0
-                        q_max = FLOOR_PRESSURE * x_c  # N/mm
+                        q_max_per_panel = FLOOR_PRESSURE * x_c  # N/mm per panel
+                        q_max_total = q_max_per_panel * n_adj  # Total for interior beams
                         
                         # Number of load arrows to draw along beam
                         n_arrows = 9
-                        max_arrow_length = elem_length * 0.15  # 15% of element length
+                        max_arrow_length = elem_length * 0.25  # INCREASED scale
                         
-                        # Scale q_max to arrow length (normalize to reasonable visual size)
-                        # Max expected q is around 50 N/mm (COMB case)
-                        q_scale = max_arrow_length / max(q_max * 2, 0.1)  # Double max for interior beams
+                        # Scale q_max to arrow length
+                        q_scale = max_arrow_length / max(q_max_per_panel * 2, 0.1)
+
                         
                         for i in range(n_arrows):
                             ratio = i / (n_arrows - 1)
@@ -2050,11 +2092,11 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                                 start[2] + ratio * (end[2] - start[2])
                             ]
                             
-                            # Triangular load distribution: 0 -> q_max (at center) -> 0
+                            # Triangular load distribution: 0 -> q_max_total (at center) -> 0
                             if ratio <= 0.5:
-                                q_at_pos = q_max * (ratio * 2)
+                                q_at_pos = q_max_total * (ratio * 2)
                             else:
-                                q_at_pos = q_max * ((1 - ratio) * 2)
+                                q_at_pos = q_max_total * ((1 - ratio) * 2)
                             
                             arrow_length = q_at_pos * q_scale
                             
@@ -2064,10 +2106,10 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                                           0, 0, -arrow_length,
                                           color=arrow_color, arrow_length_ratio=0.15, linewidth=1.0, alpha=0.8)
                         
-                        # Add load value annotation at midpoint
-                        mid_z_offset = max_arrow_length * 1.3
+                        # Add load value annotation showing total q with panel count
+                        mid_z_offset = max_arrow_length * 1.4
                         ax.text(mid[0], mid[1], mid[2] + mid_z_offset, 
-                                f"q={q_max:.1f}",
+                                f"q={q_max_total:.1f}",
                                 fontsize=6, color=arrow_color, ha='center', alpha=0.9)
 
             
