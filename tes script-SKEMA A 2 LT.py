@@ -37,13 +37,51 @@ PYTHON_EXE_PATH = r"C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python312\\
 ANALYSIS_SCRIPT_PATH = r"C:\\Users\\hp\\AppData\\Roaming\\Tugas Akhir 2025\\RevitAPI.extension\\Tugas Akhir.tab\\ROIDA.panel\\Create.pushbutton\\Analysis\\Analysis.py"
 
 # 3. Parameter Geometri & Beban
-N_STORY     = 2        
+N_STORY     = 2       
 BAY_X_COUNT = 2        
 BAY_Y_COUNT = 2        
-SPAN_X_MM   = 4000.0     
+SPAN_X_MM   = 4000   
 SPAN_Y_MM   = 4000.0     
 HEIGHT_MM   = 4000.0     
-LOAD_LIVE_OFFICE_MPA = 0.024 # 2.4 kPa
+
+# ================= FLOOR LOAD CALCULATION =================
+
+# --- Input Parameters ---
+SLAB_THICKNESS = 150.0        # Tebal slab beton (mm) - untuk SelfWeight
+SLAB_ADD_THICKNESS = 30.0     # Tebal spesi/finishing (mm) - untuk ADL
+
+# --- Constants ---
+CONCRETE_UNIT_WEIGHT_kN_m3 = 24.0    # Berat jenis beton bertulang (kN/m³)
+MORTAR_WEIGHT_kg_m2_cm = 21.0        # Berat spesi per cm tebal (kg/m²/cm)
+GRAVITY_m_s2 = 9.81                   # Percepatan gravitasi (m/s²)
+
+# --- SelfWeight Slab Pressure (SW) ---
+# Berat sendiri slab = Tebal(m) × γ_beton(kN/m³)
+# Contoh: 0.15m × 24 kN/m³ = 3.6 kN/m² = 0.0036 MPa
+slab_thickness_m = SLAB_THICKNESS / 1000.0
+SW_kN_m2 = slab_thickness_m * CONCRETE_UNIT_WEIGHT_kN_m3
+SLAB_SW_PRESSURE = round(SW_kN_m2 * 0.001, 5)  # MPa (N/mm²)
+
+# --- Additional Dead Load Pressure (ADL) ---
+# Beban finishing = Tebal(cm) × Berat_spesi(kg/m²/cm) × g
+# Contoh: 3cm × 21 kg/m²/cm = 63 kg/m² = 0.618 kN/m² = 0.000618 MPa
+add_thickness_cm = SLAB_ADD_THICKNESS / 10.0
+ADL_kg_m2 = add_thickness_cm * MORTAR_WEIGHT_kg_m2_cm
+ADL_kN_m2 = ADL_kg_m2 * GRAVITY_m_s2 / 1000.0
+SLAB_ADL_PRESSURE = round(ADL_kN_m2 * 0.001, 5)  # MPa (N/mm²)
+
+# --- Live Load Pressure (LL) ---
+LIVE_LOAD_PRESSURE = 0.024  # MPa (24 kN/m²)
+
+# --- Combination Factors ---
+# Faktor pengali untuk kombinasi pembebanan custom
+# Default: 1.0×SW + 1.0×ADL + 1.0×LL
+FACTOR_SW = 1.0
+FACTOR_ADL = 1.0
+FACTOR_LL = 1.0
+
+# ============================================================
+
 
 COLUMN_ROTATION_DEG = 0
 
@@ -149,9 +187,8 @@ def calculate_beam_distributed_load(start_node, end_node):
         if abs(abs(x_pos) - edge_x) < edge_tol:
             is_edge = True
 
-    # 4. Hitung Beban Puncak Distribusi (q_peak)
+    # 4. Hitung Beban Puncak Distribusi untuk setiap tipe beban
     #    q_peak = Pressure (MPa) * Lebar Tributary Max (mm)
-    w = LOAD_LIVE_OFFICE_MPA # N/mm2
     
     if is_one_way and is_long_span:
         tributary_width = Lx / 2.0 # Persegi panjang setengah bentang
@@ -159,53 +196,75 @@ def calculate_beam_distributed_load(start_node, end_node):
         tributary_width = Lx / 2.0 # Puncak segitiga/trapesium selalu Lx/2
     else:
         tributary_width = 0.0 # Balok pendek pada One Way dianggap 0
-
-    # Hitung q puncak (N/mm)
-    q_peak = w * tributary_width
     
     # LOGIKA BENAR:
     # - Jika balok INTERIOR (tengah), menanggung beban dari KEDUA sisi (x2)
     # - Jika balok EDGE (tepi), hanya menanggung dari SATU sisi (x1)
-    if not is_edge:
-        q_peak = q_peak * 2.0
+    multiplier = 2.0 if not is_edge else 1.0
     
-    # 5. [BARU] KONVERSI KE BEBAN TITIK (POINT LOAD) DI TENGAH BENTANG
-    #    Prinsip: Point Load (P) = Luas Area Diagram Beban (Total Force)
-    
-    P_total = 0.0
-    shape_type = "None"
+    # Hitung q_peak untuk setiap tipe beban (N/mm)
+    q_peak_sw = SLAB_SW_PRESSURE * tributary_width * multiplier    # Slab self-weight
+    q_peak_adl = SLAB_ADL_PRESSURE * tributary_width * multiplier  # Finishing
+    q_peak_ll = LIVE_LOAD_PRESSURE * tributary_width * multiplier  # Live load
 
-    if q_peak > 0:
+    # 5. Konversi ke Beban Titik (Point Load) untuk setiap tipe
+    #    Point Load (P) = Luas Area Diagram Beban (Total Force)
+    
+    def calc_point_load(q_peak, shape_type, beam_len, Lx):
+        """Calculate point load based on load shape"""
+        if q_peak <= 0:
+            return 0.0
+        if shape_type == "Rectangle":
+            return q_peak * beam_len
+        elif shape_type == "Triangle":
+            return 0.5 * beam_len * q_peak
+        elif shape_type == "Trapezoid":
+            calc_len = beam_len if beam_len > Lx else Lx
+            return q_peak * (calc_len - 0.5 * Lx)
+        return 0.0
+    
+    # Determine load shape
+    shape_type = "None"
+    if tributary_width > 0:
         if is_one_way and is_long_span:
-            # Pola: PERSEGI PANJANG
-            # Luas = q * L
             shape_type = "Rectangle"
-            P_total = q_peak * beam_length
-            
         elif not is_one_way and is_short_span:
-            # Pola: SEGITIGA
-            # Luas = 0.5 * alas * tinggi
             shape_type = "Triangle"
-            P_total = 0.5 * beam_length * q_peak
-            
         elif not is_one_way:
-            # Pola: TRAPESIUM
-            # Luas = q_peak * (L_total - 0.5 * L_flat_ramp)
-            # Secara geometris: Luas Trapesium 45 derajat = q_peak * (L - 0.5 * Lx)
-            # Karena bagian miringnya memakan jarak Lx/2 di kiri dan kanan.
             shape_type = "Trapezoid"
-            
-            # Safety check: Jika panjang balok anehnya lebih kecil dari Lx
-            calc_len = beam_length if beam_length > Lx else Lx 
-            P_total = q_peak * (calc_len - 0.5 * Lx)
+    
+    # Calculate point loads for each type
+    P_sw = calc_point_load(q_peak_sw, shape_type, beam_length, Lx)
+    P_adl = calc_point_load(q_peak_adl, shape_type, beam_length, Lx)
+    P_ll = calc_point_load(q_peak_ll, shape_type, beam_length, Lx)
 
     return {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": shape_type, # Info bentuk aslinya
+        "load_shape": shape_type,
         "is_edge": is_edge,
-        "q_peak_dist": round(q_peak, 4),      # Beban distribusi max (N/mm) - sekedar info
-        "point_load_N": round(P_total, 2),    # BEBAN TITIK FINAL (N)
-        "location_ratio": 0.5                 # Posisi di tengah bentang (0.5 L)
+        
+        # Deadload (Slab Self-Weight)
+        "deadload": {
+            "pattern": "Deadload_Slab",
+            "q_peak_Nmm": round(q_peak_sw, 4),
+            "point_load_N": round(P_sw, 2),
+            "location_ratio": 0.5
+        },
+        
+        # Additional Dead Load (Finishing/Spesi)
+        "additional_dl": {
+            "pattern": "AdditionalDL_Finishing", 
+            "q_peak_Nmm": round(q_peak_adl, 4),
+            "point_load_N": round(P_adl, 2),
+            "location_ratio": 0.5
+        },
+        
+        # Live Load
+        "liveload": {
+            "pattern": "Liveload_Assign",
+            "q_peak_Nmm": round(q_peak_ll, 4),
+            "point_load_N": round(P_ll, 2),
+            "location_ratio": 0.5
+        }
     }
     
 # ===================================================
@@ -1416,9 +1475,21 @@ try:
     def ft32mm3(ft3): return ft3 * 28316846.59
 
     # --- B. SET GLOBALS UNTUK FUNGSI HITUNGAN ---
-    # 1. Load Pressure Global
-    try: globals()['LOAD_LIVE_OFFICE_MPA'] = float(LOAD_LIVE_OFFICE_MPA) 
-    except: globals()['LOAD_LIVE_OFFICE_MPA'] = 0.0
+    # 1. Load Pressure Global (SW, ADL, LL terpisah)
+    try: 
+        globals()['SLAB_SW_PRESSURE'] = float(SLAB_SW_PRESSURE)
+        globals()['SLAB_ADL_PRESSURE'] = float(SLAB_ADL_PRESSURE)
+        globals()['LIVE_LOAD_PRESSURE'] = float(LIVE_LOAD_PRESSURE)
+        globals()['FACTOR_SW'] = float(FACTOR_SW)
+        globals()['FACTOR_ADL'] = float(FACTOR_ADL)
+        globals()['FACTOR_LL'] = float(FACTOR_LL)
+    except: 
+        globals()['SLAB_SW_PRESSURE'] = 0.0
+        globals()['SLAB_ADL_PRESSURE'] = 0.0
+        globals()['LIVE_LOAD_PRESSURE'] = 0.0
+        globals()['FACTOR_SW'] = 1.0
+        globals()['FACTOR_ADL'] = 1.0
+        globals()['FACTOR_LL'] = 1.0
 
     # 2. Grid Spacing
     try: globals()['SPAN_X_MM'] = float(SPAN_X_MM)
@@ -1475,8 +1546,17 @@ try:
 
     # --- D. SAVE JSON (STRUKTUR FINAL) ---
     final_output = {
-        # DISINI LIST GLOBALNYA
-        "global_pressure_loads": [globals()['LOAD_LIVE_OFFICE_MPA']], 
+        # Load Pressures (terpisah untuk SW, ADL, LL)
+        "slab_sw_pressure": globals()['SLAB_SW_PRESSURE'],     # MPa (Slab self-weight)
+        "slab_adl_pressure": globals()['SLAB_ADL_PRESSURE'],   # MPa (Finishing/spesi)
+        "live_load_pressure": globals()['LIVE_LOAD_PRESSURE'], # MPa (Live load)
+        
+        # Combination Factors
+        "combination_factors": {
+            "SW": globals()['FACTOR_SW'],
+            "ADL": globals()['FACTOR_ADL'],
+            "LL": globals()['FACTOR_LL']
+        },
         
         "unit_system": "Revit Converted (mm, N, MPa)",
         "model_elements": final_elements_list
@@ -1490,7 +1570,11 @@ try:
         
     json_success = True
     print("✅ Export Selesai.")
-    print("   Global Load List: [ {} MPa ]".format(globals()['LOAD_LIVE_OFFICE_MPA']))
+    print("   Slab SW Pressure: {} MPa".format(globals()['SLAB_SW_PRESSURE']))
+    print("   Slab ADL Pressure: {} MPa".format(globals()['SLAB_ADL_PRESSURE']))
+    print("   Live Load Pressure: {} MPa".format(globals()['LIVE_LOAD_PRESSURE']))
+    print("   Combination: {}SW + {}ADL + {}LL".format(
+        globals()['FACTOR_SW'], globals()['FACTOR_ADL'], globals()['FACTOR_LL']))
     print("   Total Elements: {}".format(len(final_elements_list)))
 
 except Exception as e:
@@ -1616,13 +1700,20 @@ if json_success:
                     
                     else:
                         out.print_md("# 📑 LAPORAN HASIL ANALISIS STRUKTUR")
-                        out.print_md("Berikut adalah hasil untuk 3 skenario pembebanan:")
+                        out.print_md("Berikut adalah hasil untuk 5 skenario pembebanan:")
 
+                        # Build dynamic combination label with actual factors
+                        comb_label = "({:.1f}SW + {:.1f}ADL + {:.1f}LL)".format(
+                            FACTOR_SW, FACTOR_ADL, FACTOR_LL
+                        )
+                        
                         # Daftar Kasus yang akan ditampilkan (Key di JSON, Judul Tampilan)
                         load_cases = [
-                            ("SelfWeight", "🏗️ KASUS 1: BEBAN MATI (Self Weight)"),
-                            ("LiveLoad", "🚶 KASUS 2: BEBAN HIDUP (Live Load)"),
-                            ("Combination", "⚖️ KASUS 3: KOMBINASI (SW + LL)")
+                            ("SelfWeight", "🏗️ KASUS 1: BEBAN MATI - Self Weight (Beam + Kolom + Slab)"),
+                            ("AdditionalDL", "🧱 KASUS 2: BEBAN MATI TAMBAHAN - ADL (Finishing/Spesi)"),
+                            ("DeadLoad", "⚖️ KASUS 3: TOTAL BEBAN MATI (SW + ADL)"),
+                            ("LiveLoad", "🚶 KASUS 4: BEBAN HIDUP (Live Load)"),
+                            ("Combination", "🔗 KASUS 5: KOMBINASI " + comb_label)
                         ]
 
                         for case_key, case_title in load_cases:
