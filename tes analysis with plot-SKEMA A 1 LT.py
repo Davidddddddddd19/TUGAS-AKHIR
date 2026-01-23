@@ -1832,48 +1832,69 @@ def run_load_case(data, case_type):
                                "stations": stations_output
                             }
                     else:
-                          # SUB-ELEMENTS: Average across all sub-elements or use first (legacy logic)
-                          # For now, use FIRST sub-element with adaptive stationing
-                          first_eid = subs[0][0]
+                          # SUB-ELEMENTS: DIRECT NUMERICAL EXTRACTION
+                          # Query ops.eleForce() at each sub-element boundary
+                          # This avoids analytical interpolation error for triangular/trapezoidal loads
+                          
                           local_axes = item['raw'].get('local_axes', {})
-                          
-                          # Get element length from topology
-                          element_length = item['raw'].get('topology', {}).get('length_mm', 0)
-                          
-                          # Iterate ALL sub-elements
                           element_length_total = item['raw'].get('topology', {}).get('length_mm', 0)
                           is_vert = item.get('is_vertical', False)
                           stations_output = []
                           cumulative_dist = 0.0
                           
                           for i, (sub_eid, sub_len) in enumerate(subs):
-                                # Find critical stations for this sub-element
-                                critical_stations = find_critical_stations(sub_eid, local_axes, sub_len, num_samples=5, is_vertical=is_vert)
+                                # Get raw forces from OpenSees (12-component array)
+                                forces_raw = ops.eleForce(sub_eid)
                                 
-                                for station_data in critical_stations:
-                                    local_ratio = station_data['station']
-                                    local_dist = local_ratio * sub_len
-                                    
-                                    # Global Element Context
-                                    actual_distance = cumulative_dist + local_dist
-                                    global_ratio = actual_distance / element_length_total if element_length_total > 0 else 0
-                                    
-                                    forces = station_data['forces']
-                                    
-                                    # Filter duplicates if needed (e.g. End of Sub 1 == Start of Sub 2)
-                                    # But keeping all is safer for "stepped" diagrams if values differ.
+                                # For FIRST sub-element, include i-node (station 0)
+                                if i == 0:
+                                    # Extract i-node forces (indices 0-5)
+                                    # BEAM mapping: P=0, V2=2, V3=1, T=3, M2=5, M3=4
+                                    i_forces = {
+                                        "P": -forces_raw[0],
+                                        "V2": -forces_raw[2],
+                                        "V3": -forces_raw[1],
+                                        "T": -forces_raw[3],
+                                        "M2": -forces_raw[5],
+                                        "M3": forces_raw[4]
+                                    }
                                     
                                     stations_output.append({
-                                        "station": round(global_ratio, 4),
-                                        "distance_mm": round(actual_distance, 2),
-                                        "P":  round(forces["P"], 2),
-                                        "V2": round(forces["V2"], 2),
-                                        "V3": round(forces["V3"], 2),
-                                        "T":  round(forces["T"], 2),
-                                        "M2": round(-forces["M2"], 2),  # SAP2000 sign convention
-                                        "M3": round(forces["M3"], 2)
+                                        "station": 0.0,
+                                        "distance_mm": 0.0,
+                                        "P":  round(i_forces["P"], 2),
+                                        "V2": round(i_forces["V2"], 2),
+                                        "V3": round(i_forces["V3"], 2),
+                                        "T":  round(i_forces["T"], 2),
+                                        "M2": round(-i_forces["M2"], 2),
+                                        "M3": round(i_forces["M3"], 2)
                                     })
-                                    
+                                
+                                # Always include j-node (end of this sub-element)
+                                # Extract j-node forces (indices 6-11)
+                                j_dist = cumulative_dist + sub_len
+                                global_ratio = j_dist / element_length_total if element_length_total > 0 else 0
+                                
+                                j_forces = {
+                                    "P": forces_raw[6],
+                                    "V2": forces_raw[8],
+                                    "V3": forces_raw[7],
+                                    "T": forces_raw[9],
+                                    "M2": forces_raw[11],
+                                    "M3": -forces_raw[10]
+                                }
+                                
+                                stations_output.append({
+                                    "station": round(global_ratio, 4),
+                                    "distance_mm": round(j_dist, 2),
+                                    "P":  round(j_forces["P"], 2),
+                                    "V2": round(j_forces["V2"], 2),
+                                    "V3": round(j_forces["V3"], 2),
+                                    "T":  round(j_forces["T"], 2),
+                                    "M2": round(-j_forces["M2"], 2),
+                                    "M3": round(j_forces["M3"], 2)
+                                })
+                                
                                 cumulative_dist += sub_len
                           
                           # Calculate max deflection for this element
@@ -1882,7 +1903,7 @@ def run_load_case(data, case_type):
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
                                "applied_load": item.get('applied_load', ''),
-                               "element_length_mm": element_length,
+                               "element_length_mm": element_length_total,
                                "max_deflection": max_defl,
                                "stations": stations_output
                             }
