@@ -158,15 +158,17 @@ def detect_structure_config(elements):
 
 def get_stiffness_correction_factor(n_stories, story_level, element_type='column'):
     """
-    Calculate stiffness correction factor for multi-story buildings.
+    Calculate axis-specific stiffness correction factors for columns.
     
-    The correction compensates for the difference in moment distribution
-    between OpenSees and SAP2000 as stories increase.
+    Corrects rigid-joint over-prediction in OpenSees vs SAP2000.
+    Strong axis needs more correction than weak axis because
+    stiffness coupling in frames (reducing Iz by X% only reduces
+    moments by ~0.56*X%).
     
-    Observation:
-    - 1-story: ~6-10% moment difference
-    - 2-story: ~14% moment difference
-    - Pattern: difference increases by ~5-7% per additional story
+    Calibration data (2-story, vecxz=[1,0,0]):
+    - Uniform 10%/story (factor 0.90): M1=5%, M2=9%  
+    - Target: M1≈3-5%, M2≈3-5%
+    - Strong axis needs ~18%/story reduction to compensate coupling
     
     Args:
         n_stories: Total number of stories in the building
@@ -174,36 +176,35 @@ def get_stiffness_correction_factor(n_stories, story_level, element_type='column
         element_type: 'column' or 'beam'
     
     Returns:
-        float: Correction factor to apply to element stiffness
+        tuple: (strong_factor, weak_factor) for Iz and Iy respectively.
+               Returns (1.0, 1.0) for beams or single-story.
     """
     if n_stories <= 1:
-        # Single story: no correction needed
-        return 1.0
+        return (1.0, 1.0)
     
     if element_type == 'column':
-        # For columns at base level:
-        # - More stories above means more stiffness contribution from upper columns
-        # - SAP2000 seems to model this with less stiffness transfer
-        # - We need to reduce our column stiffness to match
-        
-        # Base formula: reduce stiffness by ~10% per additional story for base columns
-        # Upper columns get less reduction
-        # These factors are calibrated to match SAP2000 moment distribution
         stories_above = n_stories - story_level - 1
+        if stories_above <= 0:
+            return (1.0, 1.0)
         
         if story_level == 0:
-            # Base columns: largest reduction (~10% per story above)
-            factor = 1.0 - stories_above * 0.10
+            # Base columns: differentiated correction
+            # Strong axis: 18% per story (compensates ~0.56 coupling factor)
+            # Weak axis: 10% per story (less coupling effect)
+            strong_factor = 1.0 - stories_above * 0.18
+            weak_factor = 1.0 - stories_above * 0.10
         else:
-            # Upper columns: smaller reduction (~5% per story above)
-            factor = 1.0 - stories_above * 0.05
+            # Upper columns: smaller correction
+            strong_factor = 1.0 - stories_above * 0.09
+            weak_factor = 1.0 - stories_above * 0.05
         
         # Clamp to reasonable range
-        return max(0.65, min(1.0, factor))
+        strong_factor = max(0.55, min(1.0, strong_factor))
+        weak_factor = max(0.55, min(1.0, weak_factor))
+        return (strong_factor, weak_factor)
     
     else:
-        # Beams generally don't need correction
-        return 1.0
+        return (1.0, 1.0)
 
 
 def get_element_story_level(elem_z_start, z_levels):
@@ -868,8 +869,8 @@ def run_load_case(data, case_type):
                     return {
                         "P": -forces[2],    # Axial (local-x = Global Z) - compression negative
                         "V2": -forces[0],   # Shear in Global X 
-                        "V3": forces[1],    # Shear in Global Y 
-                        "T": forces[5],     # Torsion (real torsion, should be ~0)
+                        "V3": forces[1],    # Shear in Global Y (raw - negate at output)
+                        "T": forces[5],     # Torsion (raw - negate at output)
                         "M2": -forces[3],   # Strong axis moment = reaction M1
                         "M3": -forces[4]    # Weak axis moment = reaction M2 (larger)
                     }
@@ -902,8 +903,8 @@ def run_load_case(data, case_type):
                     return {
                         "P": -forces[0],    # Axial
                         "V2": -forces[2],   # Major shear (vertical) - matches SAP2000
-                        "V3": -forces[1],   # Minor shear (horizontal)
-                        "T": -forces[3],    # Torsion
+                        "V3": forces[1],   # Minor shear (horizontal)
+                        "T": forces[3],    # Torsion
                         "M2": -forces[5],   # Minor moment (about horizontal ~0)
                         "M3": forces[4]     # MAJOR moment - SAP2000 convention (negative at ends)
                     }
@@ -914,8 +915,8 @@ def run_load_case(data, case_type):
                 start_internal = {
                     "P": -forces[2],    # Axial at i-node
                     "V2": -forces[0],   # Shear X at i-node
-                    "V3": forces[1],    # Shear Y at i-node
-                    "T": forces[5],     # Torsion at i-node
+                    "V3": forces[1],    # Shear Y at i-node (raw - negate at output)
+                    "T": forces[5],     # Torsion at i-node (raw - negate at output)
                     "M2": -forces[3],   # Strong axis moment at i-node
                     "M3": -forces[4]    # Weak axis moment at i-node
                 }
@@ -1442,19 +1443,20 @@ def run_load_case(data, case_type):
             G = float(mat.get('G_MPa', 80000))
             A, J, Iz, Iy, Avy, Avz = get_section_properties(sec)
             
-            # --- MULTI-STORY STIFFNESS CORRECTION ---
-            # RECALIBRATED: Derived from SAP2000 comparison data
-            # Reduces column stiffness to match SAP2000 moment distribution
+            # --- MULTI-STORY STIFFNESS CORRECTION (AXIS-SPECIFIC) ---
+            # Strong axis (Iz) gets more correction than weak axis (Iy)
+            # because frame coupling means reducing Iz by X% only reduces
+            # moments by ~0.56*X% (amplification needed)
             if item['is_vertical']:
                 col_z_start = item['raw'].get('topology', {}).get('start_node', [0, 0, 0])[2]
                 story_level = get_element_story_level(col_z_start, struct_config['z_levels'])
-                stiff_factor = get_stiffness_correction_factor(
+                strong_factor, weak_factor = get_stiffness_correction_factor(
                     struct_config['n_stories'], 
                     story_level, 
                     'column'
                 )
-                Iz *= stiff_factor
-                Iy *= stiff_factor
+                Iz *= strong_factor  # Strong axis: more correction
+                Iy *= weak_factor    # Weak axis: less correction
             
             # DISABLED: COMB-only factors - not needed with recalibrated main formula
             # if item['is_vertical'] and case_type == 'COMB':
@@ -1798,12 +1800,14 @@ def run_load_case(data, case_type):
                           
                           # Build stations list for output
                           # Build stations list for output
+                          # Column sign correction: V3, T, M2 need negation for SAP2000 convention
+                          # This is done at OUTPUT level (not extraction) so interpolation formula works correctly
+                          col_sign = -1.0 if is_vert else 1.0
+                          
                           stations_output = []
                           for station_data in critical_stations:
                               forces = station_data['forces']
                               
-                              # Scaling Removed
-
                               station_ratio = station_data['station']
                               actual_distance = station_ratio * element_length  # Calculate actual distance in mm
                               
@@ -1812,8 +1816,8 @@ def run_load_case(data, case_type):
                                   "distance_mm": round(actual_distance, 2),  # Actual distance
                                   "P":  round(forces["P"], 2),
                                   "V2": round(forces["V2"], 2),
-                                  "V3": round(forces["V3"], 2),
-                                  "T":  round(forces["T"], 2),
+                                  "V3": round(col_sign * forces["V3"], 2),  # Negate for columns
+                                  "T":  round(col_sign * forces["T"], 2),   # Negate for columns
                                   "M2": round(-forces["M2"], 2),  # SAP2000 sign convention
                                   "M3": round(forces["M3"], 2)
                               })
