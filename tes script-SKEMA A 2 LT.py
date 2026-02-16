@@ -687,7 +687,7 @@ def get_local_axes(element, doc):
         "x_axis": [1.0, 0.0, 0.0],
         "y_axis": [0.0, 1.0, 0.0],
         "z_axis": [0.0, 0.0, 1.0],
-        "rotation_angle_deg": 0.0
+        #"rotation_angle_deg": 0.0
     }
     
     try:
@@ -716,7 +716,7 @@ def get_local_axes(element, doc):
             local_axes["y_axis"] = [round(v, 6) for v in new_y]
             local_axes["z_axis"] = [round(v, 6) for v in new_z]
             
-            local_axes["rotation_angle_deg"] = -90.0
+            #local_axes["rotation_angle_deg"] = -90.0
             
             # Determine Web Direction based on New Basis
             # Web is usually along local Y (Depth direction for I-beam in analysis convention?)
@@ -755,7 +755,7 @@ def get_local_axes(element, doc):
             local_axes["z_axis"] = [round(lz_x, 6), round(lz_y, 6), round(lz_z, 6)]
             
             # Set explicit rotation value
-            local_axes["rotation_angle_deg"] = float(COLUMN_ROTATION_DEG)
+            #local_axes["rotation_angle_deg"] = float(COLUMN_ROTATION_DEG)
             
             # Remove web_direction for columns (Requested by User)
             if "web_direction" in local_axes:
