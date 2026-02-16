@@ -1,11 +1,16 @@
 {
-  "global_pressure_loads": [
-    0.024
-  ],
+  "slab_sw_pressure": 0.0036,
+  "slab_adl_pressure": 0.00062,
+  "live_load_pressure": 0.024,
+  "combination_factors": {
+    "SW": 1.0,
+    "ADL": 1.0,
+    "LL": 1.0
+  },
   "unit_system": "Revit Converted (mm, N, MPa)",
   "model_elements": [
     {
-      "id": 380010,
+      "id": 399260,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -68,8 +73,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -98,7 +102,7 @@
       "loads": null
     },
     {
-      "id": 380012,
+      "id": 399262,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -161,8 +165,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -191,7 +194,7 @@
       "loads": null
     },
     {
-      "id": 380013,
+      "id": 399263,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -254,8 +257,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -284,7 +286,7 @@
       "loads": null
     },
     {
-      "id": 380014,
+      "id": 399264,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -347,8 +349,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -377,7 +378,7 @@
       "loads": null
     },
     {
-      "id": 380015,
+      "id": 399265,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -440,8 +441,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -470,7 +470,7 @@
       "loads": null
     },
     {
-      "id": 380016,
+      "id": 399266,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -533,8 +533,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -563,7 +562,7 @@
       "loads": null
     },
     {
-      "id": 380017,
+      "id": 399267,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -626,8 +625,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -656,7 +654,7 @@
       "loads": null
     },
     {
-      "id": 380018,
+      "id": 399268,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -719,8 +717,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -749,7 +746,7 @@
       "loads": null
     },
     {
-      "id": 380019,
+      "id": 399269,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -812,8 +809,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -842,7 +838,7 @@
       "loads": null
     },
     {
-      "id": 380020,
+      "id": 399270,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -906,7 +902,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -934,16 +929,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380022,
+      "id": 399272,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1007,7 +1016,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1035,16 +1043,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380024,
+      "id": 399274,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1108,7 +1130,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1136,16 +1157,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380026,
+      "id": 399276,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1209,7 +1244,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1237,16 +1271,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380028,
+      "id": 399278,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1310,7 +1358,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1338,16 +1385,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380030,
+      "id": 399280,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1411,7 +1472,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1439,16 +1499,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380032,
+      "id": 399282,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1512,7 +1586,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1540,16 +1613,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380034,
+      "id": 399284,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1613,7 +1700,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1641,16 +1727,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380036,
+      "id": 399286,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1714,7 +1814,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1742,16 +1841,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380038,
+      "id": 399288,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1815,7 +1928,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1843,16 +1955,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380040,
+      "id": 399290,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -1916,7 +2042,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -1944,16 +2069,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380042,
+      "id": 399292,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -2017,7 +2156,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -2045,16 +2183,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380044,
+      "id": 399294,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2117,8 +2269,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2147,7 +2298,7 @@
       "loads": null
     },
     {
-      "id": 380046,
+      "id": 399296,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2210,8 +2361,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2240,7 +2390,7 @@
       "loads": null
     },
     {
-      "id": 380047,
+      "id": 399297,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2303,8 +2453,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2333,7 +2482,7 @@
       "loads": null
     },
     {
-      "id": 380048,
+      "id": 399298,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2396,8 +2545,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2426,7 +2574,7 @@
       "loads": null
     },
     {
-      "id": 380049,
+      "id": 399299,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2489,8 +2637,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2519,7 +2666,7 @@
       "loads": null
     },
     {
-      "id": 380050,
+      "id": 399300,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2582,8 +2729,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2612,7 +2758,7 @@
       "loads": null
     },
     {
-      "id": 380051,
+      "id": 399301,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2675,8 +2821,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2705,7 +2850,7 @@
       "loads": null
     },
     {
-      "id": 380052,
+      "id": 399302,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2768,8 +2913,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2798,7 +2942,7 @@
       "loads": null
     },
     {
-      "id": 380053,
+      "id": 399303,
       "type": "Column",
       "family": "UC-Universal Columns-Column : UC305x305x97",
       "section": {
@@ -2861,8 +3005,7 @@
           -0.0,
           1.0,
           0.0
-        ],
-        "rotation_angle_deg": 0.0
+        ]
       },
       "design_parameters": {
         "Kx": 0.65,
@@ -2891,7 +3034,7 @@
       "loads": null
     },
     {
-      "id": 380054,
+      "id": 399304,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -2955,7 +3098,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -2983,16 +3125,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380056,
+      "id": 399306,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3056,7 +3212,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3084,16 +3239,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380058,
+      "id": 399308,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3157,7 +3326,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3185,16 +3353,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380060,
+      "id": 399310,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3258,7 +3440,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3286,16 +3467,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380062,
+      "id": 399312,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3359,7 +3554,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3387,16 +3581,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380064,
+      "id": 399314,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3460,7 +3668,6 @@
           -1.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3488,16 +3695,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380066,
+      "id": 399316,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3561,7 +3782,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3589,16 +3809,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380068,
+      "id": 399318,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3662,7 +3896,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3690,16 +3923,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380070,
+      "id": 399320,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3763,7 +4010,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3791,16 +4037,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380072,
+      "id": 399322,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3864,7 +4124,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3892,16 +4151,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": false,
-        "q_peak_dist": 96.0,
-        "point_load_N": 192000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 14.4,
+          "point_load_N": 28800.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 2.48,
+          "point_load_N": 4960.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 96.0,
+          "point_load_N": 192000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380074,
+      "id": 399324,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -3965,7 +4238,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -3993,16 +4265,30 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     },
     {
-      "id": 380076,
+      "id": 399326,
       "type": "Beam",
       "family": "UB-Universal Beams : UB305x165x40",
       "section": {
@@ -4066,7 +4352,6 @@
           -0.0,
           -0.0
         ],
-        "rotation_angle_deg": -90.0,
         "web_direction": "y_axis"
       },
       "design_parameters": {
@@ -4094,12 +4379,26 @@
         "srpmk_web_ok": true
       },
       "loads": {
-        "pattern": "Liveload_Assign",
-        "load_shape_origin": "Triangle",
+        "load_shape": "Triangle",
         "is_edge": true,
-        "q_peak_dist": 48.0,
-        "point_load_N": 96000.0,
-        "location_ratio": 0.5
+        "deadload": {
+          "pattern": "Deadload_Slab",
+          "q_peak_Nmm": 7.2,
+          "point_load_N": 14400.0,
+          "location_ratio": 0.5
+        },
+        "additional_dl": {
+          "pattern": "AdditionalDL_Finishing",
+          "q_peak_Nmm": 1.24,
+          "point_load_N": 2480.0,
+          "location_ratio": 0.5
+        },
+        "liveload": {
+          "pattern": "Liveload_Assign",
+          "q_peak_Nmm": 48.0,
+          "point_load_N": 96000.0,
+          "location_ratio": 0.5
+        }
       }
     }
   ]
