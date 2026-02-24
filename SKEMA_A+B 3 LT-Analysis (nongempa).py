@@ -25,7 +25,7 @@ G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
 # - End Length Offset: 0.5 (Rigid Zone Factor)
 # - Self-Weight: Auto-Calculate
 # Expected deviation: F1/F2/F3/M1 ~0-2%, M2 ~10-11% (element formulation difference)
-RIGID_END_ZONE_FACTOR = 0.3  # Optimized via REZ scan to best match SAP2000 overall
+RIGID_END_ZONE_FACTOR = 0.0  # Optimized via REZ scan to best match SAP2000 overall
 
 # No empirical correction factors - all set to 1.0
 # Deviation from SAP2000 is expected due to differences in element formulation
@@ -1678,106 +1678,53 @@ def run_load_case(data, case_type):
                      else:
                          # Beam: distributed vertical load (SAP2000 uses distributed)
                          ops.eleLoad('-ele', eid, '-type', '-beamUniform', -w_dead, 0.0, 0.0)
-        # B. SLAB/FLOOR PRESSURE LOADS - TWO-WAY YIELD LINE DISTRIBUTION
-        # Implements proper tributary area calculation with 45-degree bisectors
-        # Short span beams get triangle loads, long span beams get trapezoid loads
+        # B. SLAB/FLOOR PRESSURE LOADS - UNIFORM SHELL (SAP2000 Convention)
+        # Distributes slab load as nodal forces at column-beam joints
+        # Matches SAP2000 "Uniform (Shell)" with section=None:
+        #   - No shell stiffness, loads transfer directly to joints
+        #   - Each joint receives load proportional to its tributary area
+        #   - Beams do NOT carry slab moment (only self-weight moment)
         if FLOOR_PRESSURE > 0:
             span_x = struct_config['span_x']
             span_y = struct_config['span_y']
-            n_span_x = struct_config['n_span_x']
-            n_span_y = struct_config['n_span_y']
-            
-            edge_x = n_span_x * span_x / 2.0
-            edge_y = n_span_y * span_y / 2.0
-            edge_tol = 10.0
-            
-            # Determine short and long spans for yield line theory
-            L_short = min(span_x, span_y)
-            L_long = max(span_x, span_y)
-            
-            # Critical distance from corner where 45 degree lines meet
-            x_c = L_short / 2.0
-            
-            # Build list of slab panels
-            panels = []
-            for ix in range(n_span_x):
-                for iy in range(n_span_y):
-                    x0 = -edge_x + ix * span_x
-                    x1 = x0 + span_x
-                    y0 = -edge_y + iy * span_y
-                    y1 = y0 + span_y
-                    panels.append({'x0': x0, 'x1': x1, 'y0': y0, 'y1': y1,
-                                   'Lx': span_x, 'Ly': span_y})
-            
-            # Process each beam and calculate loads from adjacent panels
+
+            # Use actual grid coordinates (not computed from center)
+            x_coords = struct_config['x_coords']
+            y_coords = struct_config['y_coords']
+
+            # Identify floor Z levels (exclude ground level)
+            z_levels = set()
             for item in processed_elements:
                 if not item['is_vertical']:
-                    raw = item['raw']
-                    start = raw['topology']['start_node']
-                    end = raw['topology']['end_node']
-                    
-                    sx, sy = start[0], start[1]
-                    ex, ey = end[0], end[1]
-                    beam_len = item['length']
-                    
-                    is_x_beam = abs(sy - ey) < edge_tol
-                    is_y_beam = abs(sx - ex) < edge_tol
-                    
-                    # Find adjacent panels
-                    adjacent_panels = []
-                    for panel in panels:
-                        if is_x_beam:
-                            if (abs(sy - panel['y0']) < edge_tol or abs(sy - panel['y1']) < edge_tol):
-                                beam_x0, beam_x1 = min(sx, ex), max(sx, ex)
-                                if beam_x0 >= panel['x0'] - edge_tol and beam_x1 <= panel['x1'] + edge_tol:
-                                    adjacent_panels.append(panel)
-                        elif is_y_beam:
-                            if (abs(sx - panel['x0']) < edge_tol or abs(sx - panel['x1']) < edge_tol):
-                                beam_y0, beam_y1 = min(sy, ey), max(sy, ey)
-                                if beam_y0 >= panel['y0'] - edge_tol and beam_y1 <= panel['y1'] + edge_tol:
-                                    adjacent_panels.append(panel)
-                    
-                    if not adjacent_panels:
-                        continue
-                    
-                    subs = sub_elements_map.get(item['id'], [(item['id'], item['length'])])
-                    num_subs = len(subs)
-                    
-                    for panel in adjacent_panels:
-                        Lx, Ly = panel['Lx'], panel['Ly']
-                        L_s = min(Lx, Ly)
-                        x_c_p = L_s / 2.0
-                        q_max = FLOOR_PRESSURE * x_c_p
-                        
-                        if is_x_beam:
-                            is_short_span = (Lx <= Ly)
-                        else:
-                            is_short_span = (Ly <= Lx)
-                        
-                        def get_q(pos, length, q_max, x_c, is_tri):
-                            if is_tri:
-                                L_half = length / 2.0
-                                if pos <= L_half: return q_max * (pos / L_half)
-                                else: return q_max * ((length - pos) / L_half)
-                            else:
-                                if pos <= x_c: return q_max * (pos / x_c)
-                                elif pos >= length - x_c: return q_max * ((length - pos) / x_c)
-                                else: return q_max
+                    z = node_coords[item['nodes'][0]][2]
+                    z_levels.add(round(z, 0))
+            z_levels = sorted([z for z in z_levels if z > min_z + 10])
 
-                        is_triangle = (is_short_span or abs(Lx - Ly) < edge_tol)
-                        
-                        for k, (eid, seg_len) in enumerate(subs):
-                            seg_start_x = sum(s[1] for s in subs[:k])
-                            seg_end_x = seg_start_x + seg_len
-                            
-                            q_start = get_q(seg_start_x, beam_len, q_max, x_c_p, is_triangle)
-                            q_end = get_q(seg_end_x, beam_len, q_max, x_c_p, is_triangle)
-                            q_avg = (q_start + q_end) / 2.0
-                            
-                            ops.eleLoad('-ele', eid, '-type', '-beamUniform', -q_avg, 0.0)
-                            
-                            load_on_seg = q_avg * seg_len
-                            total_applied_force_z -= load_on_seg
+            # For each floor, distribute slab load to column-beam joint nodes
+            for z in z_levels:
+                for ix, jx in enumerate(x_coords):
+                    for iy, jy in enumerate(y_coords):
+
+                        # Tributary width in X and Y
+                        if ix == 0 or ix == len(x_coords) - 1:
+                            trib_x = span_x / 2.0
+                        else:
+                            trib_x = span_x
+
+                        if iy == 0 or iy == len(y_coords) - 1:
+                            trib_y = span_y / 2.0
+                        else:
+                            trib_y = span_y
+
+                        trib_area = trib_x * trib_y
+                        fz = -FLOOR_PRESSURE * trib_area
+                        total_applied_force_z += fz
+
+                        # Find the node at this joint
+                        for nid, c in node_coords.items():
+                            if abs(c[0]-jx) < 1 and abs(c[1]-jy) < 1 and abs(c[2]-z) < 1:
+                                ops.load(nid, 0.0, 0.0, fz, 0.0, 0.0, 0.0)
+                                break
 
 
         # --- SOLVE ---
@@ -1993,6 +1940,589 @@ def run_load_case(data, case_type):
                     
     except Exception as e:
         print(f"[ERROR] Case {case_type}: {e}")
+        res["status"] = "Error"
+    
+    return res
+
+# ============================================================================
+# 3.5 SEISMIC ANALYSIS — Equivalent Lateral Force (SNI 1726)
+# ============================================================================
+
+def run_seismic_analysis(data, direction='EQx'):
+    """
+    Equivalent Lateral Force (ELF) procedure per SNI 1726.
+    
+    Builds full structural model, applies lateral forces at floor master nodes
+    via rigid diaphragm, and returns reactions + internal forces.
+    
+    Args:
+        data: Model data dictionary (from Model data.json)
+        direction: 'EQx' or 'EQy'
+    
+    Returns:
+        dict: Complete seismic analysis results
+    """
+    res = {
+        "status": "Failed",
+        "direction": direction,
+        "nodes": {},
+        "elements": {},
+        "seismic_parameters": {},
+        "floor_data": [],
+        "summary": {}
+    }
+    
+    seismic_params = data.get('seismic_parameters', {})
+    if not seismic_params:
+        print("[ERROR] No seismic_parameters found in model data!")
+        return res
+    
+    elements_list = data.get('model_elements', [])
+    SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))
+    SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))
+    
+    # --- Detect structure config DYNAMICALLY ---
+    struct_config = detect_structure_config(elements_list)
+    n_stories = struct_config['n_stories']
+    story_height_mm = struct_config['story_height']
+    story_height_m = story_height_mm / 1000.0
+    n_span_x = struct_config['n_span_x']
+    n_span_y = struct_config['n_span_y']
+    span_x = struct_config['span_x']
+    span_y = struct_config['span_y']
+    z_levels = struct_config['z_levels']
+    x_coords = struct_config['x_coords']
+    y_coords = struct_config['y_coords']
+    
+    print(f"  Seismic Config: {n_stories} stories, {n_span_x}x{n_span_y} spans")
+    print(f"  Span X={span_x}mm, Span Y={span_y}mm, Story H={story_height_mm}mm")
+    
+    # Extract seismic parameters
+    SDS = float(seismic_params.get('SDS', 0))
+    SD1 = float(seismic_params.get('SD1', 0))
+    S1 = float(seismic_params.get('S1', 0))
+    TL = float(seismic_params.get('TL', 12))
+    Ie = float(seismic_params.get('Ie', 1.0))
+    R = float(seismic_params.get('R', 8.0))
+    Cd = float(seismic_params.get('Cd', 5.5))
+    Ta = float(seismic_params.get('Ta', 0.5))
+    T = Ta  # Use approximate fundamental period
+    
+    GRAVITY = 9.81  # m/s²
+    
+    try:
+        # ================================================================
+        # A. CALCULATE SEISMIC WEIGHT PER FLOOR (Wi) — SECTION CUT
+        # ================================================================
+        # Wi = weight of structure tributary to each floor level
+        # Dynamic: uses actual n_stories, spans, element properties
+        
+        # Floor Z-levels (excluding base z=0)
+        min_z = min(z_levels) if z_levels else 0.0
+        floor_z = sorted([z for z in z_levels if z > min_z + 100])
+        
+        if len(floor_z) != n_stories:
+            print(f"  WARNING: floor_z has {len(floor_z)} levels, expected {n_stories}")
+            # Fallback: generate evenly spaced floors
+            floor_z = [min_z + (i+1)*story_height_mm for i in range(n_stories)]
+        
+        Wi_N = [0.0] * n_stories  # Weight in N per floor
+        
+        # --- A1. Element self-weight (columns + beams) ---
+        for elem in elements_list:
+            topo = elem.get('topology', {})
+            sec = elem.get('section', {})
+            mat = elem.get('material', {})
+            
+            A_mm2 = float(sec.get('Area_mm2', 0))
+            rho = float(mat.get('Rho_kg/m3', 0))
+            if rho == 0:
+                rho = float(mat.get('Rho_kg/mm3', 0)) * 1e9
+            
+            L_mm = float(topo.get('length_mm', 0))
+            
+            # Element weight in N: ρ(kg/m³) * 1e-9(kg/mm³) * A(mm²) * L(mm) * g(m/s²) * 1000(mm/m)
+            # = ρ * 1e-9 * A * L * g * 1000 = ρ * A * L * g * 1e-6
+            w_element_N = rho * 1e-9 * A_mm2 * L_mm * GRAVITY
+            
+            start_z = float(topo['start_node'][2])
+            end_z = float(topo['end_node'][2])
+            
+            elem_type = elem.get('type', '')
+            
+            if elem_type == 'Column':
+                # Column: 50% to floor above, 50% to floor below
+                z_bot = min(start_z, end_z)
+                z_top = max(start_z, end_z)
+                
+                # Find floor index for bottom and top
+                for fi in range(n_stories):
+                    fz = floor_z[fi]
+                    # Top of column at this floor level
+                    if abs(z_top - fz) < 100:
+                        Wi_N[fi] += w_element_N * 0.5
+                    # Bottom of column at this floor level (or base)
+                    if abs(z_bot - fz) < 100 and fi > 0:
+                        Wi_N[fi] += w_element_N * 0.5  # Already at upper floor
+                    elif abs(z_bot - fz) < 100 and fi == 0:
+                        pass  # Bottom at base — goes to foundation, not seismic weight
+                
+                # Handle column spanning from base: top half to floor 1
+                if abs(z_bot - min_z) < 100:
+                    for fi in range(n_stories):
+                        if abs(z_top - floor_z[fi]) < 100:
+                            Wi_N[fi] += w_element_N * 0.5
+                            break
+                            
+            else:
+                # Beam: 100% to the floor where beam is located
+                beam_z = (start_z + end_z) / 2.0
+                for fi in range(n_stories):
+                    if abs(beam_z - floor_z[fi]) < 100:
+                        Wi_N[fi] += w_element_N
+                        break
+        
+        # --- A2. Slab weights (per floor) ---
+        # Number of panels per floor = n_span_x * n_span_y
+        n_panels = n_span_x * n_span_y
+        # Slab area per panel (mm²)
+        panel_area_mm2 = span_x * span_y
+        
+        # Slab SW per floor (N): pressure(N/mm²) * area(mm²) * n_panels
+        slab_sw_per_floor_N = SLAB_SW_PRESSURE * panel_area_mm2 * n_panels
+        # ADL per floor (N)
+        slab_adl_per_floor_N = SLAB_ADL_PRESSURE * panel_area_mm2 * n_panels
+        
+        for fi in range(n_stories):
+            Wi_N[fi] += slab_sw_per_floor_N + slab_adl_per_floor_N
+        
+        # Convert to kN
+        Wi_kN = [w / 1000.0 for w in Wi_N]
+        W_total_kN = sum(Wi_kN)
+        
+        # Floor heights from base (m)
+        hi_m = [(fz - min_z) / 1000.0 for fz in floor_z]
+        
+        print(f"\n  --- Seismic Weight Summary ---")
+        print(f"  {'Floor':>5} | {'Wi (kN)':>12} | {'hi (m)':>8}")
+        print(f"  {'-'*5}-+-{'-'*12}-+-{'-'*8}")
+        for fi in range(n_stories-1, -1, -1):
+            print(f"  {fi+1:>5} | {Wi_kN[fi]:>12.3f} | {hi_m[fi]:>8.1f}")
+        print(f"  {'TOTAL':>5} | {W_total_kN:>12.3f} |")
+        
+        # ================================================================
+        # B. CALCULATE Cs (Seismic Response Coefficient) — SNI 1726
+        # ================================================================
+        Cs = SDS / (R / Ie)  # Pers. 31
+        
+        # Upper bound (Pers. 32/33)
+        if T <= TL:
+            Cs_max = SD1 / (T * (R / Ie))  # Pers. 32
+        else:
+            Cs_max = (SD1 * TL) / (T**2 * (R / Ie))  # Pers. 33
+        Cs = min(Cs, Cs_max)
+        
+        # Lower bound (Pers. 34)
+        Cs_min = max(0.044 * SDS * Ie, 0.01)
+        if S1 >= 0.6:
+            Cs_min = max(Cs_min, 0.5 * S1 / (R / Ie))  # Pers. 35
+        Cs = max(Cs, Cs_min)
+        
+        # ================================================================
+        # C. CALCULATE k (Distribution Exponent)
+        # ================================================================
+        if T <= 0.5:
+            k = 1.0
+        elif T >= 2.5:
+            k = 2.0
+        else:
+            k = 1.0 + (T - 0.5) / 2.0  # Linear interpolation
+        
+        # ================================================================
+        # D. BASE SHEAR & VERTICAL DISTRIBUTION
+        # ================================================================
+        V_kN = Cs * W_total_kN  # Base shear (kN)
+        
+        sum_wi_hi_k = sum(Wi_kN[i] * hi_m[i]**k for i in range(n_stories))
+        
+        Cvx = []
+        Fx_kN = []
+        for i in range(n_stories):
+            if sum_wi_hi_k > 0:
+                cvx_i = (Wi_kN[i] * hi_m[i]**k) / sum_wi_hi_k
+            else:
+                cvx_i = 0.0
+            fx_i = cvx_i * V_kN
+            Cvx.append(round(cvx_i, 6))
+            Fx_kN.append(round(fx_i, 4))
+        
+        # Store seismic calculation results
+        res["seismic_parameters"] = {
+            "T": round(T, 4),
+            "Cs": round(Cs, 6),
+            "Cs_max": round(Cs_max, 6),
+            "Cs_min": round(Cs_min, 6),
+            "k": round(k, 4),
+            "V_kN": round(V_kN, 4),
+            "W_total_kN": round(W_total_kN, 4),
+            "SDS": SDS, "SD1": SD1, "R": R, "Ie": Ie, "Cd": Cd,
+        }
+        
+        res["floor_data"] = [
+            {
+                "floor": i + 1,
+                "Wi_kN": round(Wi_kN[i], 3),
+                "hi_m": round(hi_m[i], 3),
+                "wi_hi_k": round(Wi_kN[i] * hi_m[i]**k, 3),
+                "Cvx": Cvx[i],
+                "Fx_kN": Fx_kN[i],
+            }
+            for i in range(n_stories)
+        ]
+        
+        # ================================================================
+        # E. BUILD OPENSEES MODEL & APPLY LATERAL FORCES
+        # ================================================================
+        ops.wipe()
+        ops.model('basic', '-ndm', 3, '-ndf', 6)
+        
+        # --- Node mapping (same as run_load_case) ---
+        node_map = {}
+        node_coords = {}
+        next_node_id = 1
+        original_joint_nids = set()  # Track ORIGINAL structural joints only
+        
+        def get_node_id(coords):
+            nonlocal next_node_id
+            key = f"{coords[0]:.1f}_{coords[1]:.1f}_{coords[2]:.1f}"
+            if key not in node_map:
+                node_map[key] = next_node_id
+                node_coords[next_node_id] = coords
+                next_node_id += 1
+            return node_map[key]
+        
+        # Pre-process elements
+        processed_elements = []
+        for entry in elements_list:
+            p1 = entry['topology']['start_node']
+            p2 = entry['topology']['end_node']
+            n1 = get_node_id(p1)
+            n2 = get_node_id(p2)
+            original_joint_nids.add(n1)
+            original_joint_nids.add(n2)
+            dx, dy, dz = p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]
+            L = math.sqrt(dx**2 + dy**2 + dz**2)
+            is_vertical = abs(dz) > abs(dx) and abs(dz) > abs(dy)
+            processed_elements.append({
+                'id': entry['id'], 'nodes': [n1, n2],
+                'is_vertical': is_vertical, 'length': L, 'raw': entry
+            })
+        
+        # Build nodes
+        all_z_vals = [c[2] for c in node_coords.values()]
+        min_z_val = min(all_z_vals) if all_z_vals else 0.0
+        fixed_nodes = set()
+        
+        for nid, coords in node_coords.items():
+            ops.node(nid, *coords)
+            res["nodes"][nid] = {"coords": coords, "disp": [0.0]*6, "reaction": None}
+            if abs(coords[2] - min_z_val) < 100.0:
+                ops.fix(nid, 1, 1, 1, 1, 1, 1)
+                fixed_nodes.add(nid)
+        
+        # --- Rigid End Zones ---
+        node_connecting_depths = {}
+        if RIGID_END_ZONE_FACTOR > 0:
+            for item in processed_elements:
+                sec = item['raw']['section']
+                d_mm = float(sec.get('d_mm', 0))
+                b_mm = float(sec.get('b_mm', 0))
+                for nid in item['nodes']:
+                    if nid not in node_connecting_depths:
+                        node_connecting_depths[nid] = {'col_d': 0, 'beam_d': 0}
+                    if item['is_vertical']:
+                        node_connecting_depths[nid]['col_d'] = max(
+                            node_connecting_depths[nid]['col_d'], b_mm)
+                    else:
+                        node_connecting_depths[nid]['beam_d'] = max(
+                            node_connecting_depths[nid]['beam_d'], d_mm)
+        
+        # --- Build Elements ---
+        sub_elements_map = {}
+        transf_counter = 1
+        G_ACC = 9810.0  # mm/s^2
+        
+        for item in processed_elements:
+            sec = item['raw']['section']
+            mat = item['raw']['material']
+            
+            # Section properties
+            E = float(mat.get('E_MPa', 200000))
+            Nu = float(mat.get('Nu', 0.3))
+            G = E / (2 * (1 + Nu))
+            A = float(sec.get('Area_mm2', 0))
+            J = float(sec.get('J_mm4', 0))
+            Iz = float(sec.get('Iz_mm4', 0))
+            Iy = float(sec.get('Iy_mm4', 0))
+            Avz = float(sec.get('Avz_mm2', 0))
+            Avy = float(sec.get('Avy_mm2', 0))
+            
+            if A <= 0: continue
+            
+            # Local axes
+            local_axes = item['raw'].get('local_axes', {})
+            vecxz = local_axes.get('y_axis', [0, 1, 0])
+            
+            # Map to OpenSees convention
+            if item['is_vertical']:
+                Ops_Iy, Ops_Iz = Iz, Iy
+            else:
+                Ops_Iy, Ops_Iz = Iy, Iz
+                Avy, Avz = Avz, Avy
+            
+            # Rigid end zone offsets
+            dI = [0.0, 0.0, 0.0]
+            dJ = [0.0, 0.0, 0.0]
+            
+            if RIGID_END_ZONE_FACTOR > 0:
+                n1, n2 = item['nodes']
+                p1 = node_coords[n1]
+                p2 = node_coords[n2]
+                dx = p2[0]-p1[0]; dy = p2[1]-p1[1]; dz_v = p2[2]-p1[2]
+                L_elem = math.sqrt(dx**2 + dy**2 + dz_v**2)
+                if L_elem > 0:
+                    ux, uy, uz = dx/L_elem, dy/L_elem, dz_v/L_elem
+                    
+                    if item['is_vertical']:
+                        d1 = node_connecting_depths.get(n1, {}).get('beam_d', 0)
+                        d2 = node_connecting_depths.get(n2, {}).get('beam_d', 0)
+                    else:
+                        d1 = node_connecting_depths.get(n1, {}).get('col_d', 0)
+                        d2 = node_connecting_depths.get(n2, {}).get('col_d', 0)
+                    
+                    off1 = d1 / 2.0 * RIGID_END_ZONE_FACTOR
+                    off2 = d2 / 2.0 * RIGID_END_ZONE_FACTOR
+                    
+                    dI = [ux*off1, uy*off1, uz*off1]
+                    dJ = [-ux*off2, -uy*off2, -uz*off2]
+            
+            item['dI'] = dI
+            item['dJ'] = dJ
+            item['vecxz'] = vecxz
+            
+            # Sub-elements (8 per element for beams, 4 for columns)
+            num_subs = 8 if not item['is_vertical'] else 4
+            sub_ids = []
+            prev_node = item['nodes'][0]
+            coord_start = node_coords[item['nodes'][0]]
+            coord_end = node_coords[item['nodes'][1]]
+            vx = coord_end[0]-coord_start[0]
+            vy_v = coord_end[1]-coord_start[1]
+            vz_c = coord_end[2]-coord_start[2]
+            
+            for k_sub in range(num_subs):
+                if k_sub == num_subs - 1:
+                    curr_node = item['nodes'][1]
+                else:
+                    ratio = (k_sub + 1) / num_subs
+                    nx = coord_start[0] + vx * ratio
+                    ny = coord_start[1] + vy_v * ratio
+                    nz = coord_start[2] + vz_c * ratio
+                    curr_node = next_node_id
+                    node_coords[curr_node] = (nx, ny, nz)
+                    ops.node(curr_node, nx, ny, nz)
+                    res["nodes"][curr_node] = {"coords": (nx,ny,nz), "disp": [0]*6, "reaction": None}
+                    next_node_id += 1
+                    # NOTE: these intermediate nodes are NOT in original_joint_nids
+                
+                sub_ele_id = item['id'] * 100 + k_sub
+                if sub_ele_id > 2000000000:
+                    sub_ele_id = int(sub_ele_id % 1000000 + 900000)
+                
+                sub_transf_tag = transf_counter
+                transf_counter += 1
+                
+                sub_dI = [0.0, 0.0, 0.0]
+                sub_dJ = [0.0, 0.0, 0.0]
+                if k_sub == 0:
+                    sub_dI = list(item['dI'])
+                if k_sub == num_subs - 1:
+                    sub_dJ = list(item['dJ'])
+                
+                ops.geomTransf('Linear', sub_transf_tag,
+                              vecxz[0], vecxz[1], vecxz[2],
+                              '-jntOffset', sub_dI[0], sub_dI[1], sub_dI[2],
+                              sub_dJ[0], sub_dJ[1], sub_dJ[2])
+                
+                ops.element('ElasticTimoshenkoBeam', sub_ele_id,
+                           prev_node, curr_node,
+                           E, G, A, J, Ops_Iy, Ops_Iz, Avy, Avz, sub_transf_tag)
+                
+                sub_ids.append((sub_ele_id, item['length']/num_subs))
+                prev_node = curr_node
+            
+            sub_elements_map[item['id']] = sub_ids
+        
+        # ================================================================
+        # F. RIGID DIAPHRAGM + MASS ASSIGNMENT
+        # ================================================================
+        # Create master node at centroid of each floor
+        center_x = (min(x_coords) + max(x_coords)) / 2.0
+        center_y = (min(y_coords) + max(y_coords)) / 2.0
+        
+        master_nodes = []
+        
+        for fi in range(n_stories):
+            fz = floor_z[fi]
+            
+            # Create master node at floor centroid
+            master_nid = next_node_id
+            next_node_id += 1
+            ops.node(master_nid, center_x, center_y, fz)
+            node_coords[master_nid] = (center_x, center_y, fz)
+            res["nodes"][master_nid] = {
+                "coords": (center_x, center_y, fz),
+                "disp": [0.0]*6, "reaction": None,
+                "is_master": True, "floor": fi + 1
+            }
+            
+            # CRITICAL: Only include ORIGINAL structural joint nodes as slaves
+            # Do NOT include sub-element intermediate nodes (they are NOT in original_joint_nids)
+            # Also exclude fixed nodes (base supports) and the master node itself
+            floor_slave_nodes = []
+            for nid in original_joint_nids:
+                if nid == master_nid:
+                    continue
+                if nid in fixed_nodes:
+                    continue
+                coords = node_coords.get(nid, (0,0,0))
+                if abs(coords[2] - fz) < 100.0:
+                    floor_slave_nodes.append(nid)
+            
+            if floor_slave_nodes:
+                # Apply rigid diaphragm: perpDir=3 (Z-axis)
+                # Constrains DOFs 1,2,6 (X, Y, Rz) of slaves to master
+                ops.rigidDiaphragm(3, master_nid, *floor_slave_nodes)
+                print(f"    Floor {fi+1}: master={master_nid}, slaves={len(floor_slave_nodes)} nodes")
+            else:
+                print(f"    Floor {fi+1}: master={master_nid}, NO slave nodes!")
+            
+            # CRITICAL: Fix master node DOFs 3,4,5 (Z, Rx, Ry)
+            # rigidDiaphragm(perpDir=3) only constrains DOFs 1,2,6 (X, Y, Rz)
+            # Master node has no elements attached → zero stiffness in Z, Rx, Ry
+            # Without this, the stiffness matrix is singular
+            ops.fix(master_nid, 0, 0, 1, 1, 1, 0)
+            
+            # Assign mass to master node (translational X, Y only)
+            # In consistent N, mm system: mass = W(N) / g(mm/s^2)
+            mass_val = Wi_N[fi] / G_ACC
+            ops.mass(master_nid, mass_val, mass_val, 0.0, 0.0, 0.0, 0.0)
+            
+            master_nodes.append(master_nid)
+        
+        print(f"  Created {len(master_nodes)} master nodes with rigid diaphragm")
+        
+        # ================================================================
+        # G. APPLY LATERAL FORCES (NO GRAVITY)
+        # ================================================================
+        ops.timeSeries('Linear', 1)
+        ops.pattern('Plain', 1, 1)
+        
+        for fi in range(n_stories):
+            Fx_N = Fx_kN[fi] * 1000.0  # kN → N
+            
+            if direction == 'EQx':
+                ops.load(master_nodes[fi], Fx_N, 0.0, 0.0, 0.0, 0.0, 0.0)
+            else:  # EQy
+                ops.load(master_nodes[fi], 0.0, Fx_N, 0.0, 0.0, 0.0, 0.0)
+        
+        # ================================================================
+        # H. SOLVE
+        # ================================================================
+        ops.system('UmfPack')
+        ops.numberer('Plain')
+        ops.constraints('Penalty', 1.0e14, 1.0e14)
+        ops.integrator('LoadControl', 1.0)
+        ops.algorithm('Linear')
+        ops.analysis('Static')
+        ok = ops.analyze(1)
+        
+        if ok != 0:
+            print(f"  [ERROR] Seismic analysis failed for {direction}")
+            res["status"] = "Error"
+            return res
+        
+        res["status"] = "Success"
+        
+        # ================================================================
+        # I. EXTRACT RESULTS
+        # ================================================================
+        # Nodal displacements
+        for nid in list(res["nodes"].keys()):
+            try:
+                disp = ops.nodeDisp(nid)
+                res["nodes"][nid]["disp"] = [round(d, 6) for d in disp]
+            except:
+                pass
+        
+        # Reactions at fixed nodes
+        ops.reactions()
+        total_rx, total_ry, total_rz = 0.0, 0.0, 0.0
+        
+        for nid in fixed_nodes:
+            try:
+                r = ops.nodeReaction(nid)
+                res["nodes"][nid]["reaction"] = {
+                    "Fx": round(r[0], 2), "Fy": round(r[1], 2), "Fz": round(r[2], 2),
+                    "Mx": round(r[3], 2), "My": round(r[4], 2), "Mz": round(r[5], 2)
+                }
+                total_rx += r[0]
+                total_ry += r[1]
+                total_rz += r[2]
+            except:
+                pass
+        
+        # Summary
+        V_applied_N = V_kN * 1000.0
+        res["summary"] = {
+            "V_kN": round(V_kN, 4),
+            "V_applied_N": round(V_applied_N, 2),
+            "total_reaction_x": round(total_rx, 2),
+            "total_reaction_y": round(total_ry, 2),
+            "total_reaction_z": round(total_rz, 2),
+        }
+        
+        # Check equilibrium
+        if direction == 'EQx':
+            eq_check = abs(total_rx + V_applied_N)
+            res["summary"]["equilibrium_residual_N"] = round(eq_check, 4)
+        else:
+            eq_check = abs(total_ry + V_applied_N)
+            res["summary"]["equilibrium_residual_N"] = round(eq_check, 4)
+        
+        # Element internal forces (basic)
+        for item in processed_elements:
+            elem_id = item['id']
+            subs = sub_elements_map.get(elem_id, [])
+            if subs:
+                # Get forces at first sub-element start and last sub-element end
+                first_eid = subs[0][0]
+                last_eid = subs[-1][0]
+                try:
+                    f_start = ops.eleForce(first_eid)
+                    f_end = ops.eleForce(last_eid)
+                    res["elements"][str(elem_id)] = {
+                        "type": item['raw'].get('type', 'Unknown'),
+                        "start_forces": [round(f, 2) for f in f_start[:6]],
+                        "end_forces": [round(f, 2) for f in f_end[6:12]],
+                    }
+                except:
+                    pass
+    
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Seismic analysis {direction}: {e}")
+        traceback.print_exc()
         res["status"] = "Error"
     
     return res
@@ -2446,7 +2976,7 @@ def run_analysis(input_path, output_path, generate_plots=True):
     # Get output directory for plots
     output_dir = os.path.dirname(os.path.abspath(output_path))
     
-    # Jalankan 3 Skenario dengan visualisasi
+    # Jalankan Skenario Gravitasi dengan visualisasi
     results = {}
     plot_results = {}
     
@@ -2505,6 +3035,51 @@ def run_analysis(input_path, output_path, generate_plots=True):
     else:
         print("\n[WARNING] Skipping validation - Combination case not available or failed")
         results['_validation'] = {'status': 'skipped', 'reason': 'Combination case not available'}
+
+    # ========== SEISMIC ANALYSIS (SNI 1726 ELF) ==========
+    import copy
+    seismic_params = data.get('seismic_parameters', {})
+    
+    if seismic_params:
+        for eq_dir, eq_key in [('EQx', 'SeismicX'), ('EQy', 'SeismicY')]:
+            print(f"\n{'='*66}")
+            print(f"  SEISMIC ANALYSIS — {eq_dir} (SNI 1726 ELF)")
+            print(f"{'='*66}")
+            
+            eq_result = run_seismic_analysis(copy.deepcopy(data), direction=eq_dir)
+            results[eq_key] = eq_result
+            
+            # Console output: V and Fx/Fy table
+            if eq_result.get('status') == 'Success':
+                sp = eq_result.get('seismic_parameters', {})
+                fd = eq_result.get('floor_data', [])
+                V_kN = sp.get('V_kN', 0)
+                Cs = sp.get('Cs', 0)
+                W = sp.get('W_total_kN', 0)
+                T = sp.get('T', 0)
+                
+                force_label = "Fx" if eq_dir == 'EQx' else "Fy"
+                V_label = "Vx" if eq_dir == 'EQx' else "Vy"
+                
+                print(f"\n  {V_label} = {V_kN:.4f} kN (Cs={Cs:.6f}, W={W:.3f} kN, T={T:.4f}s)")
+                print(f"\n  {'Lantai':>7} | {'Wi (kN)':>12} | {'hi (m)':>8} | {'Cvx':>8} | {force_label+' (kN)':>10}")
+                print(f"  {'-'*7}-+-{'-'*12}-+-{'-'*8}-+-{'-'*8}-+-{'-'*10}")
+                
+                for floor in sorted(fd, key=lambda x: x['floor'], reverse=True):
+                    print(f"  {floor['floor']:>7} | {floor['Wi_kN']:>12.3f} | {floor['hi_m']:>8.3f} | {floor['Cvx']:>8.6f} | {floor['Fx_kN']:>10.4f}")
+                
+                # Totals
+                sum_Fx = sum(f['Fx_kN'] for f in fd)
+                print(f"  {'-'*7}-+-{'-'*12}-+-{'-'*8}-+-{'-'*8}-+-{'-'*10}")
+                print(f"  {'TOTAL':>7} | {W:>12.3f} | {'':>8} | {'1.000':>8} | {sum_Fx:>10.4f}")
+                
+                # Equilibrium check
+                eq_res = eq_result.get('summary', {}).get('equilibrium_residual_N', 0)
+                print(f"\n  Equilibrium check: |Sum(Reaction) - V| = {eq_res:.4f} N")
+            else:
+                print(f"  [ERROR] Seismic analysis {eq_dir} failed!")
+    else:
+        print("\n[INFO] No seismic_parameters in model data — skipping seismic analysis")
 
     # Simpan JSON Output
     with open(output_path, 'w') as f:
