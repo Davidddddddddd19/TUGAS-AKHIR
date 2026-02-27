@@ -2133,7 +2133,8 @@ def run_seismic_analysis(data, direction='EQx'):
             # Fallback: generate evenly spaced floors
             floor_z = [min_z + (i+1)*story_height_mm for i in range(n_stories)]
         
-        Wi_N = [0.0] * n_stories  # Weight in N per floor
+        Wi_N = [0.0] * n_stories  # Weight in N per floor (for Cvx distribution)
+        base_mass_N = 0.0  # Weight at base level (not applied as lateral force)
         
         # --- A1. Element self-weight (columns + beams) ---
         for elem in elements_list:
@@ -2148,8 +2149,7 @@ def run_seismic_analysis(data, direction='EQx'):
             
             L_mm = float(topo.get('length_mm', 0))
             
-            # Element weight in N: ρ(kg/m³) * 1e-9(kg/mm³) * A(mm²) * L(mm) * g(m/s²) * 1000(mm/m)
-            # = ρ * 1e-9 * A * L * g * 1000 = ρ * A * L * g * 1e-6
+            # Element weight in N: ρ(kg/m³) * 1e-9(kg/mm³) * A(mm²) * L(mm) * g(m/s²)
             w_element_N = rho * 1e-9 * A_mm2 * L_mm * GRAVITY
             
             start_z = float(topo['start_node'][2])
@@ -2158,26 +2158,28 @@ def run_seismic_analysis(data, direction='EQx'):
             elem_type = elem.get('type', '')
             
             if elem_type == 'Column':
-                # Column: 50% to floor above, 50% to floor below
+                # Column: 50% to top node, 50% to bottom node
                 z_bot = min(start_z, end_z)
                 z_top = max(start_z, end_z)
+                is_base_column = abs(z_bot - min_z) < 100
                 
-                # Find floor index for bottom and top
+                # --- TOP HALF: always goes to the floor at z_top ---
                 for fi in range(n_stories):
-                    fz = floor_z[fi]
-                    # Top of column at this floor level
-                    if abs(z_top - fz) < 100:
+                    if abs(z_top - floor_z[fi]) < 100:
                         Wi_N[fi] += w_element_N * 0.5
-                    # Bottom of column at this floor level (or base)
-                    if abs(z_bot - fz) < 100 and fi > 0:
-                        Wi_N[fi] += w_element_N * 0.5  # Already at upper floor
-                    elif abs(z_bot - fz) < 100 and fi == 0:
-                        pass  # Bottom at base — goes to foundation, not seismic weight
+                        break
                 
-                # Handle column spanning from base: top half to floor 1
-                if abs(z_bot - min_z) < 100:
+                # --- BOTTOM HALF ---
+                if is_base_column:
+                    # Bottom is at foundation (z=0): track separately
+                    # Per SNI 1726 / ASCE 7: W = total dead load (including base mass)
+                    # Base mass contributes to W_total but NOT to floor Wi
+                    # (no lateral force applied at restrained base nodes)
+                    base_mass_N += w_element_N * 0.5
+                else:
+                    # Bottom is at an upper floor level: add to that floor's Wi
                     for fi in range(n_stories):
-                        if abs(z_top - floor_z[fi]) < 100:
+                        if abs(z_bot - floor_z[fi]) < 100:
                             Wi_N[fi] += w_element_N * 0.5
                             break
                             
@@ -2205,7 +2207,11 @@ def run_seismic_analysis(data, direction='EQx'):
         
         # Convert to kN
         Wi_kN = [w / 1000.0 for w in Wi_N]
-        W_total_kN = sum(Wi_kN)
+        base_mass_kN = base_mass_N / 1000.0
+        
+        # W_total = sum of ALL floor weights + base mass
+        # Per SNI 1726 §7.7.2 / ASCE 7 §12.7.2: W = total dead load
+        W_total_kN = sum(Wi_kN) + base_mass_kN
         
         # Floor heights from base (m)
         hi_m = [(fz - min_z) / 1000.0 for fz in floor_z]
@@ -2215,6 +2221,7 @@ def run_seismic_analysis(data, direction='EQx'):
         print(f"  {'-'*5}-+-{'-'*12}-+-{'-'*8}")
         for fi in range(n_stories-1, -1, -1):
             print(f"  {fi+1:>5} | {Wi_kN[fi]:>12.3f} | {hi_m[fi]:>8.1f}")
+        print(f"  {'BASE':>5} | {base_mass_kN:>12.3f} | {'0.0':>8}")
         print(f"  {'TOTAL':>5} | {W_total_kN:>12.3f} |")
         
         # ================================================================
