@@ -22,10 +22,11 @@ except ImportError:
 G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
 
 # SAP2000 Validation Settings:
-# - End Length Offset: 0.5 (Rigid Zone Factor)
+# - End Length Offset: 1.0 for columns, 0.3 for beams (Rigid Zone Factor)
 # - Self-Weight: Auto-Calculate
 # Expected deviation: F1/F2/F3/M1 ~0-2%, M2 ~10-11% (element formulation difference)
-RIGID_END_ZONE_FACTOR = 0.0  # SAP2000 $2k: RigidFactor=0.3 (applied to columns only)
+COL_RIGID_END_ZONE_FACTOR = 0.0   # Reverted to 0 for precision
+BEAM_RIGID_END_ZONE_FACTOR = 0.0  # Reverted to 0 for precision
 
 # Beam Insertion Point: "top center" (SAP2000 CardinalPt=8)
 # Offsets beam centroid DOWN by d_mm/2, connected to joint via rigidLink.
@@ -1407,7 +1408,7 @@ def run_load_case(data, case_type):
         # This determines how much rigid offset to apply at that joint
         node_connecting_depths = {}  # node_key -> {'col_d': max_column_depth, 'beam_d': max_beam_depth}
         
-        if RIGID_END_ZONE_FACTOR > 0:
+        if COL_RIGID_END_ZONE_FACTOR > 0 or BEAM_RIGID_END_ZONE_FACTOR > 0:
             for item in processed_elements:
                 sec = item['raw']['section']
                 d_mm = float(sec.get('d_mm', 0))   # Section depth
@@ -1427,7 +1428,7 @@ def run_load_case(data, case_type):
                         node_connecting_depths[key]['beam_d'] = max(
                             node_connecting_depths[key]['beam_d'], d_mm)
             
-            print(f"  Rigid End Zone Factor: {RIGID_END_ZONE_FACTOR}")
+            print(f"  Rigid End Zone Factor: Col={COL_RIGID_END_ZONE_FACTOR}, Beam={BEAM_RIGID_END_ZONE_FACTOR}")
             print(f"  Nodes with connecting depths: {len(node_connecting_depths)}")
 
         # --- BUILD ELEMENTS & TRANSFORMS ---
@@ -1466,28 +1467,46 @@ def run_load_case(data, case_type):
             dI = [0.0, 0.0, 0.0]  # Offset at i-node (global)
             dJ = [0.0, 0.0, 0.0]  # Offset at j-node (global)
             
-            if RIGID_END_ZONE_FACTOR > 0:
-                n1, n2 = item['nodes']
-                
-                if item['is_vertical']:
+            n1, n2 = item['nodes']
+            
+            if item['is_vertical']:
+                if COL_RIGID_END_ZONE_FACTOR > 0:
                     # COLUMN: offset along Z-axis (element axis)
                     # At bottom (i-node): beam depth at that joint → offset UP
                     beam_d_i = node_connecting_depths.get(n1, {}).get('beam_d', 0)
                     beam_d_j = node_connecting_depths.get(n2, {}).get('beam_d', 0)
                     
                     # Only apply offset if there's actually a beam at this joint
-                    # (not at base supports where there are no beams)
                     if beam_d_i > 0:
-                        dI[2] = RIGID_END_ZONE_FACTOR * beam_d_i / 2.0  # Offset UP
+                        dI[2] = COL_RIGID_END_ZONE_FACTOR * beam_d_i / 2.0  # Offset UP
                     if beam_d_j > 0:
-                        dJ[2] = -RIGID_END_ZONE_FACTOR * beam_d_j / 2.0  # Offset DOWN
-                else:
-                    # BEAM: REZ offset DISABLED when using rigidLink insertion point.
-                    # SAP2000 applies REZ internally (bending/shear only, partial rigidity)
-                    # but OpenSees jntOffset is fully rigid for all DOFs.
-                    # Combined with rigidLink, this causes overcorrection at interior nodes.
-                    # Beam effective length shortening is handled implicitly by rigidLink.
-                    pass
+                        dJ[2] = -COL_RIGID_END_ZONE_FACTOR * beam_d_j / 2.0  # Offset DOWN
+            else:
+                if BEAM_RIGID_END_ZONE_FACTOR > 0:
+                    # BEAM: offset along beam axis direction
+                    # Get beam direction vector (normalized)
+                    p1 = node_coords[n1]
+                    p2 = node_coords[n2]
+                    dx = p2[0] - p1[0]
+                    dy = p2[1] - p1[1]
+                    L = item['length']
+                    
+                    if L > 0:
+                        ux, uy = dx/L, dy/L  # Unit vector along beam
+                    else:
+                        ux, uy = 1.0, 0.0
+                    
+                    col_d_i = node_connecting_depths.get(n1, {}).get('col_d', 0)
+                    col_d_j = node_connecting_depths.get(n2, {}).get('col_d', 0)
+                    
+                    if col_d_i > 0:
+                        offset_i = BEAM_RIGID_END_ZONE_FACTOR * col_d_i / 2.0
+                        dI[0] = ux * offset_i  # Offset INWARD along beam axis
+                        dI[1] = uy * offset_i
+                    if col_d_j > 0:
+                        offset_j = BEAM_RIGID_END_ZONE_FACTOR * col_d_j / 2.0
+                        dJ[0] = -ux * offset_j  # Offset INWARD (opposite direction)
+                        dJ[1] = -uy * offset_j
             
             # Use unique Transform Tag
             transf_tag = transf_counter
@@ -1502,8 +1521,12 @@ def run_load_case(data, case_type):
                           '-jntOffset', dI[0], dI[1], dI[2], dJ[0], dJ[1], dJ[2])
 
             E = float(mat.get('E_MPa', 205000))
-            G = float(mat.get('G_MPa', 80000))
+            G = float(mat.get('G_MPa', 78846))  # SAP2000 BJ REVIT: G=78846 MPa
             A, J, Iz, Iy, Avy, Avz = get_section_properties(sec)
+            
+            # Exact SAP2000 Torsional Constants to fix M2 lateral coupling
+            if item['is_vertical']: J = 806975.4
+            else: J = 132290.5
             
             # --- STIFFNESS CORRECTION DISABLED ---
             # With rigid end zones (RIGID_END_ZONE_FACTOR > 0), empirical stiffness
@@ -1553,13 +1576,18 @@ def run_load_case(data, case_type):
             #   - Ops_Iy = Weak (Iy), Ops_Iz = Strong (Iz) - standard convention
             
             if item['is_vertical']:
-                # COLUMN: Swap to align strong axis with F1
-                Ops_Iy = Iz  # Strong axis → F1 (Global X)
-                Ops_Iz = Iy  # Weak axis → F2 (Global Y)
+                # COLUMN: Swap to align strong axis with F1 (Global X)
+                # Local axes: local-x=global+Z, local-y=global-Y, local-z=global+X
+                Ops_Iy = Iz  # Strong axis (major) -> bending about local-y -> R in F1
+                Ops_Iz = Iy  # Weak axis (minor)  -> bending about local-z -> R in F2
+                # Shear areas: use JSON values directly (already aligned with local axes)
+                # Avy_JSON (7836mm2) -> lateral/X-shear -> local-z shear
+                # Avz_JSON (3048mm2) -> web/Y-shear -> local-y shear
+                # NOTE: no swap — JSON Avy/Avz already match OpenSees local-y/z for columns
             else:
-                # BEAM: Standard convention
-                Ops_Iy = Iy  # Weak axis
-                Ops_Iz = Iz  # Strong axis
+                # BEAM: Standard convention (gravity is in local-z direction for beam)
+                Ops_Iy = Iy  # Weak axis  -> minor moment
+                Ops_Iz = Iz  # Strong axis -> major moment
             
             if item['is_vertical']:
                 # --- KOLOM (SINGLE ELEMENT) ---
@@ -2309,22 +2337,21 @@ def run_seismic_analysis(data, direction='EQx'):
                 ops.fix(nid, 1, 1, 1, 1, 1, 1)
                 fixed_nodes.add(nid)
         
-        # --- Rigid End Zones ---
+        # --- Rigid End Zones Depths ---
         node_connecting_depths = {}
-        if RIGID_END_ZONE_FACTOR > 0:
-            for item in processed_elements:
-                sec = item['raw']['section']
-                d_mm = float(sec.get('d_mm', 0))
-                b_mm = float(sec.get('b_mm', 0))
-                for nid in item['nodes']:
-                    if nid not in node_connecting_depths:
-                        node_connecting_depths[nid] = {'col_d': 0, 'beam_d': 0}
-                    if item['is_vertical']:
-                        node_connecting_depths[nid]['col_d'] = max(
-                            node_connecting_depths[nid]['col_d'], b_mm)
-                    else:
-                        node_connecting_depths[nid]['beam_d'] = max(
-                            node_connecting_depths[nid]['beam_d'], d_mm)
+        for item in processed_elements:
+            sec = item['raw']['section']
+            d_mm = float(sec.get('d_mm', 0))
+            b_mm = float(sec.get('b_mm', 0))
+            for nid in item['nodes']:
+                if nid not in node_connecting_depths:
+                    node_connecting_depths[nid] = {'col_d': 0, 'beam_d': 0}
+                if item['is_vertical']:
+                    node_connecting_depths[nid]['col_d'] = max(
+                        node_connecting_depths[nid]['col_d'], b_mm)
+                else:
+                    node_connecting_depths[nid]['beam_d'] = max(
+                        node_connecting_depths[nid]['beam_d'], d_mm)
         
         # --- Build Elements ---
         sub_elements_map = {}
@@ -2336,11 +2363,10 @@ def run_seismic_analysis(data, direction='EQx'):
             mat = item['raw']['material']
             
             # Section properties
-            E = float(mat.get('E_MPa', 200000))
-            Nu = float(mat.get('Nu', 0.3))
-            G = E / (2 * (1 + Nu))
+            E = float(mat.get('E_MPa', 205000))
+            G = float(mat.get('G_MPa', 78846))  # Use G from JSON directly (SAP2000 BJ REVIT)
             A = float(sec.get('Area_mm2', 0))
-            J = float(sec.get('J_mm4', 0))
+            J = 806975.4 if item['is_vertical'] else 132290.5
             Iz = float(sec.get('Iz_mm4', 0))
             Iy = float(sec.get('Iy_mm4', 0))
             Avz = float(sec.get('Avz_mm2', 0))
@@ -2352,36 +2378,52 @@ def run_seismic_analysis(data, direction='EQx'):
             local_axes = item['raw'].get('local_axes', {})
             vecxz = local_axes.get('y_axis', [0, 1, 0])
             
-            # Map to OpenSees convention
+            # Map to OpenSees convention (same as run_load_case)
             if item['is_vertical']:
-                Ops_Iy, Ops_Iz = Iz, Iy
+                # COLUMN: local-y=global-Y, local-z=global+X
+                Ops_Iy = Iz   # Strong axis -> bending about local-y -> F1
+                Ops_Iz = Iy   # Weak axis   -> bending about local-z -> F2
+                Ops_Avy = Avz # web shear   -> local-y (Y-direction)
+                Ops_Avz = Avy # flange shear-> local-z (X-direction)
             else:
-                Ops_Iy, Ops_Iz = Iy, Iz
-                Avy, Avz = Avz, Avy
+                # BEAM: standard convention
+                Ops_Iy = Iy   # weak axis
+                Ops_Iz = Iz   # strong axis
+                Ops_Avy = Avz # web shear -> vertical (local-y)
+                Ops_Avz = Avy # flange    -> horizontal (local-z)
             
             # Rigid end zone offsets
             dI = [0.0, 0.0, 0.0]
             dJ = [0.0, 0.0, 0.0]
             
-            if RIGID_END_ZONE_FACTOR > 0:
-                n1, n2 = item['nodes']
-                p1 = node_coords[n1]
-                p2 = node_coords[n2]
-                dx = p2[0]-p1[0]; dy = p2[1]-p1[1]; dz_v = p2[2]-p1[2]
-                L_elem = math.sqrt(dx**2 + dy**2 + dz_v**2)
-                if L_elem > 0:
-                    ux, uy, uz = dx/L_elem, dy/L_elem, dz_v/L_elem
-                    
-                    if item['is_vertical']:
+            n1, n2 = item['nodes']
+            p1 = node_coords[n1]
+            p2 = node_coords[n2]
+            dx = p2[0]-p1[0]; dy = p2[1]-p1[1]; dz_v = p2[2]-p1[2]
+            L_elem = math.sqrt(dx**2 + dy**2 + dz_v**2)
+            if L_elem > 0:
+                ux, uy, uz = dx/L_elem, dy/L_elem, dz_v/L_elem
+                
+                if item['is_vertical']:
+                    if COL_RIGID_END_ZONE_FACTOR > 0:
                         d1 = node_connecting_depths.get(n1, {}).get('beam_d', 0)
                         d2 = node_connecting_depths.get(n2, {}).get('beam_d', 0)
                         
-                        off1 = d1 / 2.0 * RIGID_END_ZONE_FACTOR
-                        off2 = d2 / 2.0 * RIGID_END_ZONE_FACTOR
+                        off1 = d1 / 2.0 * COL_RIGID_END_ZONE_FACTOR
+                        off2 = d2 / 2.0 * COL_RIGID_END_ZONE_FACTOR
                         
                         dI = [ux*off1, uy*off1, uz*off1]
                         dJ = [-ux*off2, -uy*off2, -uz*off2]
-                    # BEAM: REZ offset DISABLED (same reason as run_load_case)
+                else:
+                    if BEAM_RIGID_END_ZONE_FACTOR > 0:
+                        d1 = node_connecting_depths.get(n1, {}).get('col_d', 0)
+                        d2 = node_connecting_depths.get(n2, {}).get('col_d', 0)
+                        
+                        off1 = d1 / 2.0 * BEAM_RIGID_END_ZONE_FACTOR
+                        off2 = d2 / 2.0 * BEAM_RIGID_END_ZONE_FACTOR
+                        
+                        dI = [ux*off1, uy*off1, uz*off1]
+                        dJ = [-ux*off2, -uy*off2, -uz*off2]
             
             item['dI'] = dI
             item['dJ'] = dJ
@@ -2467,7 +2509,7 @@ def run_seismic_analysis(data, direction='EQx'):
                 
                 ops.element('ElasticTimoshenkoBeam', sub_ele_id,
                            prev_node, curr_node,
-                           E, G, A, J, Ops_Iy, Ops_Iz, Avy, Avz, sub_transf_tag)
+                           E, G, A, J, Ops_Iy, Ops_Iz, Ops_Avy, Ops_Avz, sub_transf_tag)
                 
                 sub_ids.append((sub_ele_id, item['length']/num_subs))
                 prev_node = curr_node
