@@ -48,41 +48,73 @@ SPAN_X_MM   = 4000
 SPAN_Y_MM   = 4000    
 HEIGHT_MM   = 4000     
 
-# ================= FLOOR LOAD CALCULATION =================
+# ================= FLOOR LOAD INPUT =================
 
 # --- Input Parameters ---
-SLAB_THICKNESS = 150.0        # Tebal slab beton (mm) - untuk SelfWeight
-SLAB_ADD_THICKNESS = 30.0     # Tebal spesi/finishing (mm) - untuk ADL
+SLAB_THICKNESS = 150.0        # Tebal slab beton (mm)
+SLAB_ADD_THICKNESS = 30.0     # Tebal spesi/finishing (mm)
 
 # --- Constants ---
 CONCRETE_UNIT_WEIGHT_kN_m3 = 24.0    # Berat jenis beton bertulang (kN/m³)
 MORTAR_WEIGHT_kg_m2_cm = 21.0        # Berat spesi per cm tebal (kg/m²/cm)
 GRAVITY_m_s2 = 9.81                   # Percepatan gravitasi (m/s²)
 
-# --- SelfWeight Slab Pressure (SW) ---
-# Berat sendiri slab = Tebal(m) × γ_beton(kN/m³)
-# Contoh: 0.15m × 24 kN/m³ = 3.6 kN/m² = 0.0036 MPa
+# --- Hitung Pressure ---
 slab_thickness_m = SLAB_THICKNESS / 1000.0
 SW_kN_m2 = slab_thickness_m * CONCRETE_UNIT_WEIGHT_kN_m3
 SLAB_SW_PRESSURE = round(SW_kN_m2 * 0.001, 5)  # MPa (N/mm²)
 
-# --- Additional Dead Load Pressure (ADL) ---
-# Beban finishing = Tebal(cm) × Berat_spesi(kg/m²/cm) × g
-# Contoh: 3cm × 21 kg/m²/cm = 63 kg/m² = 0.618 kN/m² = 0.000618 MPa
 add_thickness_cm = SLAB_ADD_THICKNESS / 10.0
 ADL_kg_m2 = add_thickness_cm * MORTAR_WEIGHT_kg_m2_cm
 ADL_kN_m2 = ADL_kg_m2 * GRAVITY_m_s2 / 1000.0
 SLAB_ADL_PRESSURE = round(ADL_kN_m2 * 0.001, 5)  # MPa (N/mm²)
 
-# --- Live Load Pressure (LL) ---
 LIVE_LOAD_PRESSURE = 0.024  # MPa (24 kN/m²)
 
-# --- Combination Factors ---
-# Faktor pengali untuk kombinasi pembebanan custom
-# Default: 1.0×SW + 1.0×ADL + 1.0×LL
-FACTOR_SW = 1.0
-FACTOR_ADL = 1.0
-FACTOR_LL = 1.0
+# ================= LOAD PATTERNS (SAP2000-like) =================
+# Setiap pattern memiliki:
+#   "type"            : "Dead"|"Live"  (kategori beban)
+#   "self_weight_mult": float          (multiplier berat sendiri elemen frame)
+#   "pressure_MPa"   : float           (tekanan lantai tambahan)
+#
+# "SelfWeight" = beban mati total: berat sendiri frame (kolom+balok) + berat slab
+# "ADL"        = beban mati tambahan (finishing/spesi), tanpa self-weight frame
+# "LIVE"       = beban hidup
+#
+# NOTE: EQx/EQy otomatis di-generate dari seismic_parameters,
+#       tidak perlu didefinisikan di sini.
+
+LOAD_PATTERNS = {
+    "SelfWeight": {
+        "type": "Dead",
+        "self_weight_mult": 1,       # Include berat sendiri frame
+        "pressure_MPa": SLAB_SW_PRESSURE  # + beban slab
+    },
+    "ADL": {
+        "type": "Dead",
+        "self_weight_mult": 0,
+        "pressure_MPa": SLAB_ADL_PRESSURE
+    },
+    "LIVE": {
+        "type": "Live",
+        "self_weight_mult": 0,
+        "pressure_MPa": LIVE_LOAD_PRESSURE
+    },
+}
+
+# ================= LOAD COMBINATIONS (SAP2000-like) =================
+# Mode: "default" = 10 DSTL SNI 1727-2020 (built-in)
+#        "custom"  = HANYA custom di bawah
+#        "both"    = default + custom
+LOAD_COMBO_MODE = "both"
+
+# Custom combinations: {"NamaKombo": {"NamaPattern": factor, ...}}
+# Pattern names harus match keys LOAD_PATTERNS atau "EQx"/"EQy"
+CUSTOM_LOAD_COMBOS = {
+    "COMB1": {"SelfWeight": 1.0, "ADL": 1.0, "LIVE": 1.0},
+    "COMB2": {"SelfWeight": 1.5, "ADL": 1.5, "LIVE": 1.5},
+    # "COMB3": {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.5, "EQx": 1.3},
+}
 
 # ============================================================
 
@@ -2254,16 +2286,10 @@ try:
         globals()['SLAB_SW_PRESSURE'] = float(SLAB_SW_PRESSURE)
         globals()['SLAB_ADL_PRESSURE'] = float(SLAB_ADL_PRESSURE)
         globals()['LIVE_LOAD_PRESSURE'] = float(LIVE_LOAD_PRESSURE)
-        globals()['FACTOR_SW'] = float(FACTOR_SW)
-        globals()['FACTOR_ADL'] = float(FACTOR_ADL)
-        globals()['FACTOR_LL'] = float(FACTOR_LL)
     except: 
         globals()['SLAB_SW_PRESSURE'] = 0.0
         globals()['SLAB_ADL_PRESSURE'] = 0.0
         globals()['LIVE_LOAD_PRESSURE'] = 0.0
-        globals()['FACTOR_SW'] = 1.0
-        globals()['FACTOR_ADL'] = 1.0
-        globals()['FACTOR_LL'] = 1.0
 
     # 2. Grid Spacing
     try: globals()['SPAN_X_MM'] = float(SPAN_X_MM)
@@ -2320,17 +2346,19 @@ try:
 
     # --- D. SAVE JSON (STRUKTUR FINAL) ---
     final_output = {
-        # Load Pressures (terpisah untuk SW, ADL, LL)
-        "slab_sw_pressure": globals()['SLAB_SW_PRESSURE'],     # MPa (Slab self-weight)
-        "slab_adl_pressure": globals()['SLAB_ADL_PRESSURE'],   # MPa (Finishing/spesi)
-        "live_load_pressure": globals()['LIVE_LOAD_PRESSURE'], # MPa (Live load)
+        # Load Patterns (SAP2000-like)
+        "load_patterns": LOAD_PATTERNS,
         
-        # Combination Factors
-        "combination_factors": {
-            "SW": globals()['FACTOR_SW'],
-            "ADL": globals()['FACTOR_ADL'],
-            "LL": globals()['FACTOR_LL']
+        # Load Combination Config
+        "load_combination_config": {
+            "mode": LOAD_COMBO_MODE,
+            "custom_combinations": CUSTOM_LOAD_COMBOS
         },
+        
+        # Legacy fields (backward compatibility)
+        "slab_sw_pressure": SLAB_SW_PRESSURE,
+        "slab_adl_pressure": SLAB_ADL_PRESSURE,
+        "live_load_pressure": LIVE_LOAD_PRESSURE,
         
         # Seismic Parameters (SNI 1726)
         "seismic_parameters": {
@@ -2357,11 +2385,10 @@ try:
         
     json_success = True
     print("✅ Export Selesai.")
-    print("   Slab SW Pressure: {} MPa".format(globals()['SLAB_SW_PRESSURE']))
-    print("   Slab ADL Pressure: {} MPa".format(globals()['SLAB_ADL_PRESSURE']))
-    print("   Live Load Pressure: {} MPa".format(globals()['LIVE_LOAD_PRESSURE']))
-    print("   Combination: {}SW + {}ADL + {}LL".format(
-        globals()['FACTOR_SW'], globals()['FACTOR_ADL'], globals()['FACTOR_LL']))
+    print("   Load Patterns: {}".format(list(LOAD_PATTERNS.keys())))
+    print("   Combo Mode: {}".format(LOAD_COMBO_MODE))
+    if CUSTOM_LOAD_COMBOS:
+        print("   Custom Combos: {}".format(list(CUSTOM_LOAD_COMBOS.keys())))
     print("   Total Elements: {}".format(len(final_elements_list)))
 
 except Exception as e:
@@ -2557,9 +2584,11 @@ if json_success:
                     # ================================================================
                     # Transformasi coords [x,y,z] → {X, Y, Z}
                     # Transformasi disp [d0..d5] → {ux, uy, uz, rx, ry, rz}
+                    # Dynamically get all load case keys from analysis data
                     load_case_keys = [
-                        "SelfWeight", "AdditionalDL", "DeadLoad", 
-                        "LiveLoad", "Combination", "SeismicX", "SeismicY"
+                        k for k in analysis_data.keys()
+                        if not k.startswith('_') and isinstance(analysis_data[k], dict)
+                        and 'nodes' in analysis_data[k]
                     ]
                     
                     for case_key in load_case_keys:
@@ -2693,21 +2722,41 @@ if json_success:
                         merge_to_result_json(OUTPUT_PATH, ANALYSIS_JSON_PATH, MERGED_RESULT_PATH, HEIGHT_MM)
 
                         out.print_md("# 📑 LAPORAN HASIL ANALISIS STRUKTUR")
-                        out.print_md("Berikut adalah hasil untuk 5 skenario pembebanan:")
-
-                        # Build dynamic combination label with actual factors
-                        comb_label = "({:.1f}SW + {:.1f}ADL + {:.1f}LL)".format(
-                            FACTOR_SW, FACTOR_ADL, FACTOR_LL
-                        )
+                                                # Build dynamic load case list from Analysis.json keys
+                        gravity_keys = [k for k in all_results.keys() 
+                                       if not k.startswith('_') 
+                                       and k not in ('SeismicX', 'SeismicY')
+                                       and isinstance(all_results[k], dict)]
                         
-                        # Daftar Kasus yang akan ditampilkan (Key di JSON, Judul Tampilan)
-                        load_cases = [
-                            ("SelfWeight", "🏗️ KASUS 1: BEBAN MATI - Self Weight (Beam + Kolom + Slab)"),
-                            ("AdditionalDL", "🧱 KASUS 2: BEBAN MATI TAMBAHAN - ADL (Finishing/Spesi)"),
-                            ("DeadLoad", "⚖️ KASUS 3: TOTAL BEBAN MATI (SW + ADL)"),
-                            ("LiveLoad", "🚶 KASUS 4: BEBAN HIDUP (Live Load)"),
-                            ("Combination", "🔗 KASUS 5: KOMBINASI " + comb_label)
-                        ]
+                        out.print_md("Berikut adalah hasil untuk {} skenario pembebanan:".format(len(gravity_keys)))
+                        
+                        # Build display list with titles
+                        pattern_titles = {
+                            "SelfWeight": "BEBAN MATI - Self Weight (Frame + Slab)",
+                            "ADL": "BEBAN MATI TAMBAHAN - ADL (Finishing/Spesi)",
+                            "LIVE": "BEBAN HIDUP (Live Load)",
+                            "AdditionalDL": "BEBAN MATI TAMBAHAN (ADL)",
+                            "DeadLoad": "TOTAL BEBAN MATI (SW + ADL)",
+                            "LiveLoad": "BEBAN HIDUP (Live Load)",
+                            "Combination": "KOMBINASI",
+                        }
+                        
+                        load_cases = []
+                        for idx, gk in enumerate(gravity_keys, 1):
+                            title = pattern_titles.get(gk, gk)
+                            # Untuk kombinasi, tampilkan formula
+                            case_data = all_results.get(gk, {})
+                            combo_factors = case_data.get('combination_factors', {})
+                            if combo_factors:
+                                parts = []
+                                for pname, fval in combo_factors.items():
+                                    if fval == 1.0:
+                                        parts.append(pname)
+                                    else:
+                                        parts.append("{}{}".format(fval, pname))
+                                formula = " + ".join(parts)
+                                title = "{} = {}".format(gk, formula)
+                            load_cases.append((gk, "KASUS {}: {}".format(idx, title)))
 
                         for case_key, case_title in load_cases:
                             # Ambil data spesifik per kasus
