@@ -410,11 +410,12 @@ def display_results():
     # LOAD COMBINATIONS
     # =====================================================================
     if combos:
+        combo_mode = info.get("combo_mode", "default")
         combo_data = []
         for name, formula in combos.items():
             combo_data.append([name, formula])
-        print_table(combo_data, ["DSTL", "Formula"],
-                    "Load Combinations (SNI 1727-2020 LRFD)")
+        title = "Load Combinations ({} mode, {} combos)".format(combo_mode, len(combos))
+        print_table(combo_data, ["DSTL", "Formula"], title)
 
     # =====================================================================
     # FOOTER
