@@ -749,9 +749,16 @@ def print_validation_report(validation_report):
 # ============================================================================
 # 3. FUNGSI ANALISIS PER KASUS BEBAN (CORE LOGIC)
 # ============================================================================
-def run_load_case(data, case_type):
+def run_load_case(data, case_type, pattern_def=None):
     """
-    Menjalankan analisis untuk satu tipe beban (SW, LL, atau COMB).
+    Menjalankan analisis untuk satu tipe beban.
+    
+    Args:
+        data: Model data dictionary
+        case_type: Legacy tipe beban ('SW', 'ADL', 'LL', 'DL', 'COMB')
+        pattern_def: Optional pattern definition dict:
+            {"type": "Dead"|"Live", "self_weight_mult": float, "pressure_MPa": float}
+            When provided, overrides case_type-based pressure/self-weight logic.
     """
     # Struktur Data Output
     res = {
@@ -763,37 +770,38 @@ def run_load_case(data, case_type):
 
     elements_list = data.get('model_elements', [])
     
-    # --- UPDATE: AMBIL LOAD PRESSURE DARI JSON ---
-    # Terpisah untuk SW, ADL, LL
-    SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))    # Slab self-weight
-    SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))  # Finishing/spesi
-    LIVE_LOAD_PRESSURE = float(data.get('live_load_pressure', 0.0)) # Live load
+    if pattern_def:
+        # === NEW PATH: Pattern-based (SAP2000-like) ===
+        FLOOR_PRESSURE = float(pattern_def.get('pressure_MPa', 0.0))
+        SELF_WEIGHT_MULT = float(pattern_def.get('self_weight_mult', 0))
+        print(f"  Pattern mode: pressure={FLOOR_PRESSURE:.6f} MPa, sw_mult={SELF_WEIGHT_MULT}")
+    else:
+        # === LEGACY PATH: case_type-based ===
+        SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))
+        SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))
+        LIVE_LOAD_PRESSURE = float(data.get('live_load_pressure', 0.0))
+        
+        comb_factors = data.get('combination_factors', {})
+        FACTOR_SW_COMB = float(comb_factors.get('SW', 1.0))
+        FACTOR_ADL_COMB = float(comb_factors.get('ADL', 1.0))
+        FACTOR_LL_COMB = float(comb_factors.get('LL', 1.0))
+        
+        if case_type == 'SW':
+            FLOOR_PRESSURE = SLAB_SW_PRESSURE
+        elif case_type == 'ADL':
+            FLOOR_PRESSURE = SLAB_ADL_PRESSURE
+        elif case_type == 'LL':
+            FLOOR_PRESSURE = LIVE_LOAD_PRESSURE
+        elif case_type == 'DL':
+            FLOOR_PRESSURE = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE
+        else:  # COMB
+            FLOOR_PRESSURE = FACTOR_SW_COMB * SLAB_SW_PRESSURE + FACTOR_ADL_COMB * SLAB_ADL_PRESSURE + FACTOR_LL_COMB * LIVE_LOAD_PRESSURE
+        
+        # Legacy self-weight control
+        SELF_WEIGHT_MULT = 1.0 if case_type in ['SW', 'DL', 'COMB'] else 0.0
+        print(f"  Pressures: SW={SLAB_SW_PRESSURE:.6f}, ADL={SLAB_ADL_PRESSURE:.6f}, LL={LIVE_LOAD_PRESSURE:.6f} MPa")
     
-    # Combination factors
-    comb_factors = data.get('combination_factors', {})
-    FACTOR_SW = float(comb_factors.get('SW', 1.0))
-    FACTOR_ADL = float(comb_factors.get('ADL', 1.0))
-    FACTOR_LL = float(comb_factors.get('LL', 1.0))
-    
-    # FLOOR_PRESSURE ditentukan berdasarkan case_type
-    # - SW: Element self-weight ONLY (no slab pressure - matches SAP2000 convention)
-    # - ADL: Finishing pressure only
-    # - LL: Live load pressure only
-    # - DL: SW element + Slab SW + ADL (total dead load with slab)
-    # - COMB: Factor_SW*(Element+Slab) + Factor_ADL*ADL + Factor_LL*LL
-    if case_type == 'SW':
-        FLOOR_PRESSURE = SLAB_SW_PRESSURE  # Include slab self-weight (matches SAP2000 with slab loads)
-    elif case_type == 'ADL':
-        FLOOR_PRESSURE = SLAB_ADL_PRESSURE
-    elif case_type == 'LL':
-        FLOOR_PRESSURE = LIVE_LOAD_PRESSURE
-    elif case_type == 'DL':
-        FLOOR_PRESSURE = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE  # Full dead load including slab
-    else:  # COMB
-        FLOOR_PRESSURE = FACTOR_SW * SLAB_SW_PRESSURE + FACTOR_ADL * SLAB_ADL_PRESSURE + FACTOR_LL * LIVE_LOAD_PRESSURE
-    
-    print(f"  Pressures: SW={SLAB_SW_PRESSURE:.6f}, ADL={SLAB_ADL_PRESSURE:.6f}, LL={LIVE_LOAD_PRESSURE:.6f} MPa")
-    print(f"  Case {case_type}: FLOOR_PRESSURE = {FLOOR_PRESSURE:.6f} MPa")
+    print(f"  Case {case_type}: FLOOR_PRESSURE = {FLOOR_PRESSURE:.6f} MPa, SW_MULT = {SELF_WEIGHT_MULT}")
 
 
     try:
@@ -1603,7 +1611,6 @@ def run_load_case(data, case_type):
                 
             else:
                 # --- BALOK (SUBDIVIDED INTO 20 SEGMENTS) ---
-                # Matching opensees_validate.py subdivision count
                 # More segments = better accuracy for triangular/trapezoidal loads
                 
                 n_start = item['nodes'][0]
@@ -1614,6 +1621,8 @@ def run_load_case(data, case_type):
                 # --- BEAM INSERTION POINT OFFSET ---
                 # SAP2000 CardinalPt=8 (top center): beam centroid is BELOW joint
                 # by d_mm/2. Model via rigidLink from joint to offset beam node.
+                # Note: geomTransf jntOffset was tested but made errors WORSE
+                # (M2: 32%→137%, M1: 0.55%→11.76%) because it shortens flexible length.
                 if BEAM_INSERTION_POINT_TOP:
                     beam_d = float(sec.get('d_mm', 0))
                     beam_offset_z = -beam_d / 2.0  # Offset DOWN
@@ -1699,21 +1708,22 @@ def run_load_case(data, case_type):
                     sub_ids.append((sub_ele_id, item['length']/num_subs))
                     prev_node = curr_node
                 
+                
                 sub_elements_map[item['id']] = sub_ids
 
         # --- LOAD APPLICATION ---
         ops.timeSeries('Linear', 1)
         ops.pattern('Plain', 1, 1)
 
-        # A. ELEMENT SELF WEIGHT (only for SW, DL, COMB - not for ADL or LL)
-        if case_type in ['SW', 'DL', 'COMB']:           
+        # A. ELEMENT SELF WEIGHT (controlled by SELF_WEIGHT_MULT)
+        if SELF_WEIGHT_MULT > 0:
             for item in processed_elements:
                 mat = item['raw']['material']
                 rho = float(mat.get('Rho_kg/m3', 0))
                 if rho == 0: rho = float(mat.get('Rho_kg/mm3', 0)) * 1e9
                 
-                # Calculate weight per unit length
-                w_dead = float(item['raw']['section'].get('Area_mm2', 0)) * (rho * 1e-9) * G_ACC * FACTOR_SW
+                # Calculate weight per unit length (with self_weight_mult)
+                w_dead = float(item['raw']['section'].get('Area_mm2', 0)) * (rho * 1e-9) * G_ACC * FACTOR_SW * SELF_WEIGHT_MULT
                 
                 # SAP2000 auto-calculate self-weight uses FULL element length
                 item_len = item['length']
@@ -2784,7 +2794,8 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                 # Draw slab pressure load arrows for beams (based on case_name)
                 if elem_type == "Beam":
                     # Map case_name to case_type and calculate FLOOR_PRESSURE
-                    case_map = {'SelfWeight': 'SW', 'AdditionalDL': 'ADL', 'DeadLoad': 'DL', 
+                    case_map = {'SelfWeight': 'SW', 'ADL': 'ADL', 'LIVE': 'LL',
+                                'AdditionalDL': 'ADL', 'DeadLoad': 'DL', 
                                 'LiveLoad': 'LL', 'Combination': 'COMB'}
                     case_type = case_map.get(case_name, 'SW')
                     
@@ -3121,6 +3132,193 @@ def print_styled_report(final_output):
 # ============================================================================
 # 4. MAIN DRIVER
 # ============================================================================
+
+def combine_load_cases(results, combo_config, load_patterns):
+    """
+    Superpose individual pattern results into load combinations.
+    Each combination is a dict of {pattern_name: factor}.
+    Results are added to `results` dict with the combo name as key.
+    """
+    mode = combo_config.get('mode', 'default')
+    custom_combos = combo_config.get('custom_combinations', {})
+
+    # Build default combinations (10 DSTL SNI 1727-2020)
+    DEFAULT_COMBOS = {
+        'DSTL1':  {'SelfWeight': 1.4, 'ADL': 1.4},
+        'DSTL2':  {'SelfWeight': 1.2, 'ADL': 1.2, 'LIVE': 1.6},
+        'DSTL3':  {'SelfWeight': 1.2, 'ADL': 1.2, 'LIVE': 1.0, 'SeismicX': 1.0},
+        'DSTL4':  {'SelfWeight': 1.2, 'ADL': 1.2, 'LIVE': 1.0, 'SeismicY': 1.0},
+        'DSTL5':  {'SelfWeight': 0.9, 'ADL': 0.9, 'SeismicX': 1.0},
+        'DSTL6':  {'SelfWeight': 0.9, 'ADL': 0.9, 'SeismicY': 1.0},
+        'DSTL7':  {'SelfWeight': 1.2, 'ADL': 1.2, 'LIVE': 1.0, 'SeismicX': -1.0},
+        'DSTL8':  {'SelfWeight': 1.2, 'ADL': 1.2, 'LIVE': 1.0, 'SeismicY': -1.0},
+        'DSTL9':  {'SelfWeight': 0.9, 'ADL': 0.9, 'SeismicX': -1.0},
+        'DSTL10': {'SelfWeight': 0.9, 'ADL': 0.9, 'SeismicY': -1.0},
+    }
+
+    # Analysis hanya menghitung custom combinations
+    # (DSTL default hanya digunakan oleh Steel Design Engine)
+    active_combos = {}
+    if custom_combos:
+        active_combos.update(custom_combos)
+
+    if not active_combos:
+        return
+
+    print(f"\n{'='*60}")
+    print(f"  LOAD COMBINATIONS (mode={mode}, {len(active_combos)} combos)")
+    print(f"{'='*60}")
+
+    for combo_name, factors in active_combos.items():
+        # Check which patterns are available
+        available = {p: f for p, f in factors.items()
+                     if p in results and results[p].get('status') == 'Success'}
+        missing = [p for p in factors
+                   if p not in results or results.get(p, {}).get('status') != 'Success']
+
+        if not available:
+            print(f"  [{combo_name}] SKIPPED - no available patterns")
+            continue
+        if missing:
+            print(f"  [{combo_name}] WARNING - missing patterns: {missing}")
+
+        combo_result = {
+            'status': 'Success',
+            'case_name': combo_name,
+            'combination_factors': factors,
+            'nodes': {},
+            'elements': {},
+            'summary': {}
+        }
+
+        # === COMBINE NODES ===
+        all_node_ids = set()
+        for pat_name in available:
+            all_node_ids.update(results[pat_name].get('nodes', {}).keys())
+
+        total_rz = 0.0
+        for nid in all_node_ids:
+            # Get coords from first available pattern
+            coords = None
+            for pat_name in available:
+                pat_nodes = results[pat_name].get('nodes', {})
+                if nid in pat_nodes:
+                    coords = pat_nodes[nid].get('coords')
+                    break
+
+            # Combine displacements (linear superposition)
+            combined_disp = [0.0] * 6
+            for pat_name, factor in available.items():
+                pat_nodes = results[pat_name].get('nodes', {})
+                if nid in pat_nodes:
+                    pat_disp = pat_nodes[nid].get('disp', [0]*6)
+                    for i in range(6):
+                        combined_disp[i] += factor * pat_disp[i]
+
+            # Combine reactions (only for support nodes)
+            combined_reaction = None
+            has_reaction = any(
+                results[pn].get('nodes', {}).get(nid, {}).get('reaction') is not None
+                for pn in available
+            )
+
+            if has_reaction:
+                combined_reaction = {'F1': 0, 'F2': 0, 'F3': 0, 'M1': 0, 'M2': 0, 'M3': 0}
+                for pat_name, factor in available.items():
+                    pat_nodes = results[pat_name].get('nodes', {})
+                    if nid in pat_nodes:
+                        reac = pat_nodes[nid].get('reaction')
+                        if reac:
+                            for key in combined_reaction:
+                                combined_reaction[key] += factor * reac.get(key, 0)
+                combined_reaction = {k: round(v, 2) for k, v in combined_reaction.items()}
+                total_rz += combined_reaction.get('F3', 0)
+
+            combo_result['nodes'][nid] = {
+                'coords': coords,
+                'disp': [round(v, 4) for v in combined_disp],
+                'reaction': combined_reaction
+            }
+
+        combo_result['summary']['total_reaction_z'] = round(total_rz, 2)
+
+        # === COMBINE ELEMENTS ===
+        all_elem_ids = set()
+        for pat_name in available:
+            all_elem_ids.update(results[pat_name].get('elements', {}).keys())
+
+        force_keys = ['P', 'V2', 'V3', 'T', 'M2', 'M3']
+
+        for eid in all_elem_ids:
+            # Get element structure from first available pattern
+            ref_elem = None
+            for pat_name in available:
+                pat_elems = results[pat_name].get('elements', {})
+                if eid in pat_elems:
+                    ref_elem = pat_elems[eid]
+                    break
+            if not ref_elem:
+                continue
+
+            # Combine stations
+            ref_stations = ref_elem.get('stations', [])
+            combined_stations = []
+
+            for si, ref_stn in enumerate(ref_stations):
+                combined_stn = {'station': ref_stn.get('station', 0.0)}
+
+                for fk in force_keys:
+                    val = 0.0
+                    for pat_name, factor in available.items():
+                        pat_elems = results[pat_name].get('elements', {})
+                        if eid in pat_elems:
+                            pat_stns = pat_elems[eid].get('stations', [])
+                            if si < len(pat_stns):
+                                val += factor * pat_stns[si].get(fk, 0)
+                    combined_stn[fk] = round(val, 2)
+
+                combined_stations.append(combined_stn)
+
+            combined_elem = {
+                'element_type': ref_elem.get('element_type'),
+                'stations': combined_stations,
+            }
+
+            # Combine max_deflection if present
+            if 'max_deflection' in ref_elem:
+                combined_defl = {}
+                defl_keys = ['delta_y_max_mm', 'delta_y_station', 'delta_y_distance_mm',
+                             'delta_z_max_mm', 'delta_z_station', 'delta_z_distance_mm']
+                for dk in defl_keys:
+                    val = 0.0
+                    for pat_name, factor in available.items():
+                        pat_elems = results[pat_name].get('elements', {})
+                        if eid in pat_elems:
+                            pat_defl = pat_elems[eid].get('max_deflection', {})
+                            if 'max' in dk or 'distance' in dk:
+                                val += factor * pat_defl.get(dk, 0)
+                    combined_defl[dk] = round(val, 4)
+                combined_elem['max_deflection'] = combined_defl
+
+            combo_result['elements'][eid] = combined_elem
+
+        results[combo_name] = combo_result
+
+        # Formula string for console
+        formula_parts = []
+        for p, f in factors.items():
+            if f == 1.0:
+                formula_parts.append(p)
+            elif f == -1.0:
+                formula_parts.append(f'-{p}')
+            else:
+                formula_parts.append(f'{f}{p}')
+        formula = ' + '.join(formula_parts)
+        print(f"  [{combo_name}] = {formula}  (nodes={len(combo_result['nodes'])}, elems={len(combo_result['elements'])})")
+
+    print()
+
+
 def run_analysis(input_path, output_path, generate_plots=True):
     """
     Run structural analysis for all load cases.
@@ -3140,61 +3338,90 @@ def run_analysis(input_path, output_path, generate_plots=True):
     results = {}
     plot_results = {}
     
-    load_cases = [
-        ('SelfWeight', 'SW'),       # Kasus 1: Element + Slab self-weight
-        ('AdditionalDL', 'ADL'),    # Kasus 2: Finishing load (spesi)
-        ('DeadLoad', 'DL'),         # Kasus 3: SW + ADL combined
-        ('LiveLoad', 'LL'),         # Kasus 4: Live load
-        ('Combination', 'COMB')     # Kasus 5: n×SW + n×ADL + n×LL
-    ]
+    # === DYNAMIC LOAD PATTERNS (SAP2000-like) ===
+    load_patterns = data.get('load_patterns', None)
     
-    for case_key, case_type in load_cases:
-        print(f"\n{'='*60}")
-        print(f"Running Load Case: {case_key}")
-        print(f"{'='*60}")
+    if load_patterns:
+        # NEW PATH: iterate over user-defined load patterns
+        print(f"\n  Load Patterns from JSON: {list(load_patterns.keys())}")
         
-        # Run analysis
-        results[case_key] = run_load_case(data, case_type)
+        for pat_name, pat_def in load_patterns.items():
+            print(f"\n{'='*60}")
+            print(f"Running Load Pattern: {pat_name} (type={pat_def.get('type','?')})")
+            print(f"{'='*60}")
+            
+            results[pat_name] = run_load_case(data, pat_name, pattern_def=pat_def)
+            
+            # Generate visualization
+            if generate_plots and results[pat_name].get('status') == 'Success':
+                max_disp = 0.1
+                try:
+                    for eid, elem in results[pat_name].get('elements', {}).items():
+                        if isinstance(elem, dict) and 'max_deflection' in elem:
+                            defl = elem['max_deflection']
+                            max_disp = max(max_disp,
+                                           abs(defl.get('delta_y_max_mm', 0)),
+                                           abs(defl.get('delta_z_max_mm', 0)))
+                except:
+                    pass
+                sfac = max(10, min(1000, 100 / max(max_disp, 0.001)))
+                plot_results[pat_name] = visualize_model_with_local_axes(data, output_dir, pat_name, sfac_defo=sfac)
+            else:
+                plot_results[pat_name] = {"status": "skipped", "reason": "analysis failed or plots disabled"}
+    else:
+        # LEGACY PATH: hard-coded load cases (backward compatibility)
+        load_cases = [
+            ('SelfWeight', 'SW'),
+            ('AdditionalDL', 'ADL'),
+            ('DeadLoad', 'DL'),
+            ('LiveLoad', 'LL'),
+            ('Combination', 'COMB')
+        ]
         
-        # Generate visualization if analysis succeeded
-        if generate_plots and results[case_key].get('status') == 'Success':
-            # Determine appropriate scale factor based on max displacement
-            max_disp = 0.1  # Default
-            try:
-                for eid, elem in results[case_key].get('elements', {}).items():
-                    if isinstance(elem, dict) and 'max_deflection' in elem:
-                        defl = elem['max_deflection']
-                        max_disp = max(max_disp, 
-                                       abs(defl.get('delta_y_max_mm', 0)),
-                                       abs(defl.get('delta_z_max_mm', 0)))
-            except:
-                pass
+        for case_key, case_type in load_cases:
+            print(f"\n{'='*60}")
+            print(f"Running Load Case: {case_key}")
+            print(f"{'='*60}")
+            results[case_key] = run_load_case(data, case_type)
             
-            # Scale factor: aim for ~10% of element size visible
-            sfac = max(10, min(1000, 100 / max(max_disp, 0.001)))
-            
-            plot_results[case_key] = visualize_model_with_local_axes(data, output_dir, case_key, sfac_defo=sfac)
-        else:
-            plot_results[case_key] = {"status": "skipped", "reason": "analysis failed or plots disabled"}
+            if generate_plots and results[case_key].get('status') == 'Success':
+                max_disp = 0.1
+                try:
+                    for eid, elem in results[case_key].get('elements', {}).items():
+                        if isinstance(elem, dict) and 'max_deflection' in elem:
+                            defl = elem['max_deflection']
+                            max_disp = max(max_disp,
+                                           abs(defl.get('delta_y_max_mm', 0)),
+                                           abs(defl.get('delta_z_max_mm', 0)))
+                except:
+                    pass
+                sfac = max(10, min(1000, 100 / max(max_disp, 0.001)))
+                plot_results[case_key] = visualize_model_with_local_axes(data, output_dir, case_key, sfac_defo=sfac)
+            else:
+                plot_results[case_key] = {"status": "skipped", "reason": "analysis failed or plots disabled"}
     
     # Add plot paths to results
     results["_plots"] = plot_results
     
     # ========== RUN VALIDATION CHECKS ==========
-    # Run validation on the Combination case (most comprehensive)
-    if 'Combination' in results and results['Combination'].get('status') == 'Success':
+    # Run validation on SelfWeight (or Combination for legacy)
+    validation_key = None
+    for vk in ['SelfWeight', 'Combination']:
+        if vk in results and results[vk].get('status') == 'Success':
+            validation_key = vk
+            break
+    
+    if validation_key:
         print("\n" + "="*60)
-        print("Running Validation Checks...")
+        print(f"Running Validation Checks (on {validation_key})...")
         print("="*60)
         
-        validation_report = run_all_validations(results['Combination'], data)
+        validation_report = run_all_validations(results[validation_key], data)
         results['_validation'] = validation_report
-        
-        # Print validation report
         print_validation_report(validation_report)
     else:
-        print("\n[WARNING] Skipping validation - Combination case not available or failed")
-        results['_validation'] = {'status': 'skipped', 'reason': 'Combination case not available'}
+        print("\n[WARNING] Skipping validation - no suitable load case available")
+        results['_validation'] = {'status': 'skipped', 'reason': 'No suitable load case for validation'}
 
     # ========== SEISMIC ANALYSIS (SNI 1726 ELF) ==========
     import copy
@@ -3240,6 +3467,11 @@ def run_analysis(input_path, output_path, generate_plots=True):
                 print(f"  [ERROR] Seismic analysis {eq_dir} failed!")
     else:
         print("\n[INFO] No seismic_parameters in model data — skipping seismic analysis")
+
+    # ========== LOAD COMBINATION SUPERPOSITION ==========
+    combo_config = data.get('load_combination_config', {})
+    if combo_config:
+        combine_load_cases(results, combo_config, data.get('load_patterns', {}))
 
     # Simpan JSON Output
     with open(output_path, 'w') as f:
