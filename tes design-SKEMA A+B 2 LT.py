@@ -610,27 +610,33 @@ class PMMCheck:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LOAD COMBINER — SNI 1727-2020 LRFD
+# LOAD COMBINER — SNI 1727-2020 LRFD (Hybrid: Default + Custom)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class LoadCombiner:
-    """Combine station forces from individual load cases into DSTL combos."""
+    """Combine station forces from individual load cases into DSTL combos.
+    
+    Supports hybrid mode:
+      - "default": 10 DSTL SNI 1727-2020
+      - "custom":  only user-defined combos
+      - "both":    default + custom
+    """
 
-    # 10 DSTL combinations (SNI 1727-2020 Pasal 4.2.2 LRFD)
-    COMBINATIONS = {
-        "DSTL1":  {"DeadLoad": 1.4, "AdditionalDL": 1.4},
-        "DSTL2":  {"DeadLoad": 1.2, "AdditionalDL": 1.2, "LiveLoad": 1.6},
-        "DSTL3":  {"DeadLoad": 1.2, "AdditionalDL": 1.2, "LiveLoad": 1.0, "SeismicX": 1.0},
-        "DSTL4":  {"DeadLoad": 1.2, "AdditionalDL": 1.2, "LiveLoad": 1.0, "SeismicX": -1.0},
-        "DSTL5":  {"DeadLoad": 1.2, "AdditionalDL": 1.2, "LiveLoad": 1.0, "SeismicY": 1.0},
-        "DSTL6":  {"DeadLoad": 1.2, "AdditionalDL": 1.2, "LiveLoad": 1.0, "SeismicY": -1.0},
-        "DSTL7":  {"DeadLoad": 0.9, "AdditionalDL": 0.9, "SeismicX": 1.0},
-        "DSTL8":  {"DeadLoad": 0.9, "AdditionalDL": 0.9, "SeismicX": -1.0},
-        "DSTL9":  {"DeadLoad": 0.9, "AdditionalDL": 0.9, "SeismicY": 1.0},
-        "DSTL10": {"DeadLoad": 0.9, "AdditionalDL": 0.9, "SeismicY": -1.0},
+    # 10 DSTL default combinations (SNI 1727-2020 Pasal 4.2.2 LRFD)
+    DEFAULT_COMBINATIONS = {
+        "DSTL1":  {"SelfWeight": 1.4, "ADL": 1.4},
+        "DSTL2":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.6},
+        "DSTL3":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicX": 1.0},
+        "DSTL4":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicX": -1.0},
+        "DSTL5":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicY": 1.0},
+        "DSTL6":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicY": -1.0},
+        "DSTL7":  {"SelfWeight": 0.9, "ADL": 0.9, "SeismicX": 1.0},
+        "DSTL8":  {"SelfWeight": 0.9, "ADL": 0.9, "SeismicX": -1.0},
+        "DSTL9":  {"SelfWeight": 0.9, "ADL": 0.9, "SeismicY": 1.0},
+        "DSTL10": {"SelfWeight": 0.9, "ADL": 0.9, "SeismicY": -1.0},
     }
 
-    COMBO_LABELS = {
+    DEFAULT_LABELS = {
         "DSTL1":  "1.4(D+ADL)",
         "DSTL2":  "1.2(D+ADL) + 1.6L",
         "DSTL3":  "1.2(D+ADL) + 1.0L + 1.0EQx",
@@ -643,11 +649,64 @@ class LoadCombiner:
         "DSTL10": "0.9(D+ADL) - 1.0EQy",
     }
 
+    # Active combinations (populated by build())
+    COMBINATIONS = dict(DEFAULT_COMBINATIONS)
+    COMBO_LABELS = dict(DEFAULT_LABELS)
+
+    @classmethod
+    def build(cls, combo_config: dict = None, available_patterns: list = None):
+        """Build active combinations based on config.
+        
+        Args:
+            combo_config: {"mode": "default"|"custom"|"both",
+                           "custom_combinations": {"COMB1": {...}, ...}}
+            available_patterns: list of pattern names from analysis results
+        """
+        mode = (combo_config or {}).get("mode", "default")
+        custom = (combo_config or {}).get("custom_combinations", {})
+        
+        if mode in ("default", "both"):
+            cls.COMBINATIONS = dict(cls.DEFAULT_COMBINATIONS)
+            cls.COMBO_LABELS = dict(cls.DEFAULT_LABELS)
+        else:  # custom only
+            cls.COMBINATIONS = {}
+            cls.COMBO_LABELS = {}
+        
+        # Add custom combinations
+        if mode in ("custom", "both") and custom:
+            for name, factors in custom.items():
+                cls.COMBINATIONS[name] = factors
+                cls.COMBO_LABELS[name] = cls._auto_label(name, factors)
+        
+        # Validate: warn if combo references pattern not in results
+        if available_patterns:
+            for combo_name, factors in cls.COMBINATIONS.items():
+                for pat in factors:
+                    if pat not in available_patterns:
+                        print(f"  [WARN] Combo '{combo_name}' references "
+                              f"'{pat}' — not found in analysis results")
+        
+        print(f"  Load Combiner: mode='{mode}', "
+              f"{len(cls.COMBINATIONS)} active combinations")
+
+    @staticmethod
+    def _auto_label(name: str, factors: dict) -> str:
+        """Generate human-readable label for a custom combination."""
+        parts = []
+        for pat, fac in factors.items():
+            if fac == 1.0:
+                parts.append(pat)
+            elif fac == -1.0:
+                parts.append(f"-{pat}")
+            else:
+                parts.append(f"{fac}{pat}")
+        return " + ".join(parts)
+
     @staticmethod
     def combine_station(station_idx: int, elem_id: str,
                         analysis: Dict, combo_name: str) -> DesignForces:
         """
-        Combine forces at a specific station index for a given DSTL combo.
+        Combine forces at a specific station index for a given combo.
         """
         factors = LoadCombiner.COMBINATIONS[combo_name]
         result = DesignForces()
@@ -675,22 +734,24 @@ class LoadCombiner:
     @staticmethod
     def get_station_distances(elem_id: str, analysis: Dict) -> List[float]:
         """Get station distances for an element from any available load case."""
-        for lc_name in ["DeadLoad", "AdditionalDL", "LiveLoad", "SeismicX", "SeismicY"]:
-            if lc_name in analysis:
-                lc_data = analysis[lc_name]
-                if "elements" in lc_data and elem_id in lc_data["elements"]:
-                    stations = lc_data["elements"][elem_id].get("stations", [])
-                    return [s.get("distance_mm", s.get("station", 0.0) * 1.0) for s in stations]
+        for lc_name in analysis.keys():
+            if lc_name.startswith('_'):
+                continue
+            lc_data = analysis[lc_name]
+            if isinstance(lc_data, dict) and "elements" in lc_data and elem_id in lc_data["elements"]:
+                stations = lc_data["elements"][elem_id].get("stations", [])
+                return [s.get("distance_mm", s.get("station", 0.0) * 1.0) for s in stations]
         return [0.0]
 
     @staticmethod
     def get_num_stations(elem_id: str, analysis: Dict) -> int:
         """Get number of stations for an element."""
-        for lc_name in ["DeadLoad", "AdditionalDL", "LiveLoad", "SeismicX", "SeismicY"]:
-            if lc_name in analysis:
-                lc_data = analysis[lc_name]
-                if "elements" in lc_data and elem_id in lc_data["elements"]:
-                    return len(lc_data["elements"][elem_id].get("stations", []))
+        for lc_name in analysis.keys():
+            if lc_name.startswith('_'):
+                continue
+            lc_data = analysis[lc_name]
+            if isinstance(lc_data, dict) and "elements" in lc_data and elem_id in lc_data["elements"]:
+                return len(lc_data["elements"][elem_id].get("stations", []))
         return 0
 
 
@@ -722,9 +783,14 @@ class SteelDesignEngine:
         model_elements = self.data["model_data"]["model_elements"]
         analysis = self.data["analysis_results"]
 
+        # 2. Build load combinations (hybrid: default + custom)
+        combo_config = self.data.get("model_data", {}).get("load_combination_config", None)
+        available = [k for k in analysis.keys() if not k.startswith('_')]
+        LoadCombiner.build(combo_config, available)
+
         print(f"  Jumlah elemen: {len(model_elements)}")
-        print(f"  Load cases: {[k for k in analysis.keys() if not k.startswith('_')]}")
-        print(f"  Kombinasi desain: {len(LoadCombiner.COMBINATIONS)} DSTL")
+        print(f"  Load patterns: {available}")
+        print(f"  Kombinasi desain: {len(LoadCombiner.COMBINATIONS)}")
 
         # 2. Design each element
         print(f"\n{'-' * 70}")
