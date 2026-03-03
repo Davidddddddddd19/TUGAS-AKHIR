@@ -48,6 +48,52 @@ SPAN_X_MM   = 4000
 SPAN_Y_MM   = 4000    
 HEIGHT_MM   = 4000     
 
+# ============================================================
+
+COLUMN_ROTATION_DEG = 0
+
+# 4. Join Status untuk Structural Framing (Beam)
+# True = Allow Join at ends, False = Disallow Join at ends
+JOIN_STATUS = True  # Set False to disallow joins (untuk mencegah cut/extend otomatis)
+
+# ================= SECTION DATABASE (SAP2000-LIKE) =================
+# Naming: IWFdxbfxtwxtf (semua dimensi dalam mm)
+SECTIONS = {
+    "IWF303.4x165x6x10.2":   {"d": 303.4, "bf": 165, "tw": 6,  "tf": 10.2, "r": 8.9},
+    "IWF307.9x305.3x9.9x15.4": {"d": 307.9, "bf": 305.3, "tw": 9.9,  "tf": 15.4, "r": 15.2},
+}
+
+# === SECTION ASSIGNMENT (Per Group) ===
+SECTION_COL      = "IWF307.9x305.3x9.9x15.4"      # Kolom
+SECTION_BEAM_EXT = "IWF303.4x165x6x10.2"    # Balok Eksterior (tepi grid)
+SECTION_BEAM_INT = "IWF303.4x165x6x10.2"     # Balok Interior (dalam grid)
+
+# ================= MATERIAL DATABASE (SAP2000-LIKE) =================
+# Properties: Fy(MPa), Fu(MPa), E(MPa), Nu, Rho(kg/m³), thermal
+MATERIALS = {
+    "BJ 37": {"Fy": 240, "Fu": 370, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
+              "thermal_conductivity": 45.3, "specific_heat": 480},
+    "BJ 41": {"Fy": 275, "Fu": 430, "E": 205000, "Nu": 0.3, "Rho_kg_m3": 7156.4437,
+              "thermal_conductivity": 45.3, "specific_heat": 480},
+    "BJ 50": {"Fy": 290, "Fu": 500, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
+              "thermal_conductivity": 45.3, "specific_heat": 480},
+    "BJ 55": {"Fy": 410, "Fu": 550, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
+              "thermal_conductivity": 45.3, "specific_heat": 480},
+}
+
+# === MATERIAL ASSIGNMENT (Per Group) ===
+MATERIAL_COL      = "BJ 41"
+MATERIAL_BEAM_EXT = "BJ 41"
+MATERIAL_BEAM_INT = "BJ 41"
+
+# === LOOKUP TABLE PATHS ===
+BEAM_TXT_PATH = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Framing\Steel\AISC 15.0\M_W Shapes.txt"
+COL_TXT_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Columns\Steel\AISC 15.0\M_W Shapes-Column.txt"
+
+# === RFA FAMILY PATHS (untuk reload setelah txt diupdate) ===
+BEAM_RFA_PATH = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Framing\Steel\AISC 15.0\M_W Shapes.rfa"
+COL_RFA_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Columns\Steel\AISC 15.0\M_W Shapes-Column.rfa"
+
 # ================= FLOOR LOAD INPUT =================
 
 # --- Input Parameters ---
@@ -195,52 +241,6 @@ T0 = 0.2 * (SD1 / SDS)
 Ts_period = SD1 / SDS
 TOTAL_HEIGHT_M = N_STORY * HEIGHT_MM / 1000.0
 Ta = Ct * (TOTAL_HEIGHT_M ** x_Ta)
-
-# ============================================================
-
-COLUMN_ROTATION_DEG = 0
-
-# 4. Join Status untuk Structural Framing (Beam)
-# True = Allow Join at ends, False = Disallow Join at ends
-JOIN_STATUS = True  # Set False to disallow joins (untuk mencegah cut/extend otomatis)
-
-# ================= SECTION DATABASE (SAP2000-LIKE) =================
-# Naming: IWFdxbfxtwxtf (semua dimensi dalam mm)
-SECTIONS = {
-    "IWF303.4x165x6x10.2":   {"d": 303.4, "bf": 165, "tw": 6,  "tf": 10.2, "r": 8.9},
-    "IWF307.9x305.3x9.9x15.4": {"d": 307.9, "bf": 305.3, "tw": 9.9,  "tf": 15.4, "r": 15.2},
-}
-
-# === SECTION ASSIGNMENT (Per Group) ===
-SECTION_COL      = "IWF307.9x305.3x9.9x15.4"      # Kolom
-SECTION_BEAM_EXT = "IWF303.4x165x6x10.2"    # Balok Eksterior (tepi grid)
-SECTION_BEAM_INT = "IWF303.4x165x6x10.2"     # Balok Interior (dalam grid)
-
-# ================= MATERIAL DATABASE (SAP2000-LIKE) =================
-# Properties: Fy(MPa), Fu(MPa), E(MPa), Nu, Rho(kg/m³), thermal
-MATERIALS = {
-    "BJ 37": {"Fy": 240, "Fu": 370, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
-              "thermal_conductivity": 45.3, "specific_heat": 480},
-    "BJ 41": {"Fy": 275, "Fu": 430, "E": 205000, "Nu": 0.3, "Rho_kg_m3": 7156.4437,
-              "thermal_conductivity": 45.3, "specific_heat": 480},
-    "BJ 50": {"Fy": 290, "Fu": 500, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
-              "thermal_conductivity": 45.3, "specific_heat": 480},
-    "BJ 55": {"Fy": 410, "Fu": 550, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
-              "thermal_conductivity": 45.3, "specific_heat": 480},
-}
-
-# === MATERIAL ASSIGNMENT (Per Group) ===
-MATERIAL_COL      = "BJ 41"
-MATERIAL_BEAM_EXT = "BJ 41"
-MATERIAL_BEAM_INT = "BJ 41"
-
-# === LOOKUP TABLE PATHS ===
-BEAM_TXT_PATH = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Framing\Steel\AISC 15.0\M_W Shapes.txt"
-COL_TXT_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Columns\Steel\AISC 15.0\M_W Shapes-Column.txt"
-
-# === RFA FAMILY PATHS (untuk reload setelah txt diupdate) ===
-BEAM_RFA_PATH = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Framing\Steel\AISC 15.0\M_W Shapes.rfa"
-COL_RFA_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Columns\Steel\AISC 15.0\M_W Shapes-Column.rfa"
 
 # ===================================================
 # FAMILY RELOAD (load sections dari .txt ke Revit)
