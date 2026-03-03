@@ -1819,6 +1819,16 @@ try:
         # 3. GEOMETRY BUILD (CENTERED AT ORIGIN 0,0,0)
         # === CREATE/GET MATERIALS ===
         print("\n🔧 Creating Materials...")
+        # Validasi material names ada di MATERIALS dict
+        for mat_label, mat_name in [("MATERIAL_COL", MATERIAL_COL), 
+                                     ("MATERIAL_BEAM_EXT", MATERIAL_BEAM_EXT), 
+                                     ("MATERIAL_BEAM_INT", MATERIAL_BEAM_INT)]:
+            if mat_name not in MATERIALS:
+                available = ", ".join(MATERIALS.keys())
+                raise KeyError(
+                    "❌ {} = '{}' tidak ditemukan di MATERIALS dict.\n"
+                    "Material yang tersedia: {}".format(mat_label, mat_name, available))
+        
         mat_col = create_or_get_material(doc, MATERIAL_COL, MATERIALS[MATERIAL_COL])
         mat_beam_ext = create_or_get_material(doc, MATERIAL_BEAM_EXT, MATERIALS[MATERIAL_BEAM_EXT])
         mat_beam_int = create_or_get_material(doc, MATERIAL_BEAM_INT, MATERIALS[MATERIAL_BEAM_INT])
