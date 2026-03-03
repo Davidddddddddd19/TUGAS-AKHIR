@@ -254,36 +254,57 @@ class CompressionCapacity:
 
     @staticmethod
     def design(sec: SectionProperties, Kx: float, Ky: float,
-               Lx: float, Ly: float, axial_class: Dict) -> float:
+               Lx: float, Ly: float, axial_class: Dict,
+               Kz: float = 1.0, Lcz: float = None) -> float:
         """
         Returns φPn for compression (N).
-        E3: Flexural buckling (nonslender elements)
+        E3: Flexural buckling
+        E4: Torsional/flexural-torsional buckling (doubly symmetric I-shape)
         E7: Members with slender elements
         """
         phi = 0.90
         E = sec.E
         Fy = sec.Fy
 
-        # Effective lengths
-        KLr_x = (Kx * Lx) / sec.rx if sec.rx > 0 else 0
-        KLr_y = (Ky * Ly) / sec.ry if sec.ry > 0 else 0
-        KLr_max = max(KLr_x, KLr_y)
+        # Effective lengths — Lc = K·L (AISC 360-22 notation)
+        Lcx = Kx * Lx                                    # Effective length major
+        Lcy = Ky * Ly                                    # Effective length minor
+        Lc_rx = Lcx / sec.rx if sec.rx > 0 else 0        # Lc/r major
+        Lc_ry = Lcy / sec.ry if sec.ry > 0 else 0        # Lc/r minor
+        Lc_r_max = max(Lc_rx, Lc_ry)
 
-        if KLr_max == 0:
+        if Lc_r_max == 0:
             return phi * Fy * sec.A
 
-        # Elastic buckling stress — E3-4
-        Fe = (math.pi ** 2 * E) / (KLr_max ** 2)
+        # E3-4: Elastic flexural buckling stress
+        Fe_flexural = (math.pi ** 2 * E) / (Lc_r_max ** 2)
+
+        # E4-4: Elastic torsional buckling stress (doubly symmetric I-shape)
+        if Lcz is None:
+            Lcz = Lcy  # Default: Lcz = Lcy (konservatif = panjang kolom)
+        Lcz_eff = Kz * Lcz   # Kz default = 1.0
+
+        Ix_Iy = sec.Ix + sec.Iy
+        if Ix_Iy > 0 and Lcz_eff > 0:
+            Fe_torsion = (
+                (math.pi**2 * E * sec.Cw) / (Lcz_eff**2)
+                + sec.G * sec.J
+            ) / Ix_Iy
+        else:
+            Fe_torsion = Fe_flexural  # Fallback
+
+        # Governing Fe = min(E3, E4)
+        Fe = min(Fe_flexural, Fe_torsion)
 
         # Critical stress Fcr — E3-2 / E3-3
-        if KLr_max <= 4.71 * math.sqrt(E / Fy):
+        if Fy / Fe <= 2.25:  # Equivalent to Lc/r <= 4.71*sqrt(E/Fy)
             # Inelastic buckling — E3-2
             Fcr = (0.658 ** (Fy / Fe)) * Fy
         else:
             # Elastic buckling — E3-3
             Fcr = 0.877 * Fe
 
-        # Check for slender elements — E7
+        # E7: Check for slender elements
         if axial_class["overall"] == "Slender":
             Ae = CompressionCapacity._calc_effective_area(sec, Fcr, axial_class)
             Pn = Fcr * Ae
@@ -318,13 +339,21 @@ class CompressionCapacity:
             Af = 2 * sec.bf * sec.tf
             Ae = sec.A - Af * (1 - Qs)
 
-        # Slender web — Qa factor (simplified)
+        # Slender web — Qa factor using Table E7.1
         if axial_class["web"] == "Slender":
-            h_tw = sec.h / sec.tw
             f = Fcr  # Use Fcr as the stress level
-            # Effective width — E7-17
-            be = 1.92 * sec.tw * math.sqrt(E / f) * (1 - 0.34 / (h_tw) * math.sqrt(E / f))
-            be = min(be, sec.h)
+            # Table E7.1, Case (c): c1=0.22, c2=1.49 (all other elements)
+            c1, c2 = 0.22, 1.49
+            lambda_web = sec.h / sec.tw                     # Actual λ
+            lambda_r = 1.49 * math.sqrt(E / Fy)            # Limiting λr (Table B4.1a)
+            # E7-5: Elastic local buckling stress
+            Fel = (c2 * lambda_r / lambda_web) ** 2 * Fy
+            # E7-17: Effective width
+            if f > 0 and Fel > 0:
+                be = sec.h * (1 - c1 * math.sqrt(Fel / f)) * math.sqrt(Fel / f)
+                be = min(be, sec.h)
+            else:
+                be = sec.h
             if be < sec.h:
                 Ae -= (sec.h - be) * sec.tw
 
@@ -356,7 +385,9 @@ class FlexureCapacity:
             # F3 applies to FLB, take minimum with LTB from F2
             return min(Mn_F2, Mn_F3)
         else:
-            # Noncompact or slender web — simplified: use F2 with reduction
+            # NOTE: F4/F5 (noncompact/slender web) belum diimplementasi
+            # Menggunakan F2 sebagai upper bound — valid untuk rolled IWF
+            # WARNING: Jika built-up section digunakan, F4/F5 HARUS diimplementasi
             return FlexureCapacity._design_F2(sec, Lb, Cb)
 
     @staticmethod
@@ -460,7 +491,7 @@ class FlexureCapacity:
             Mn = Mp - (Mp - 0.7 * Fy * Sy) * ((lam - lp) / (lr - lp))
         else:
             # Slender — F6-4
-            Fcr = 0.69 * E / (lam ** 2)
+            Fcr = 0.7 * E / (lam ** 2)
             Mn = Fcr * Sy
 
         return phi * min(Mn, Mp)
@@ -499,7 +530,9 @@ class FlexureCapacity:
             return 1.0
 
         Cb = 12.5 * Mmax / denom
-        return max(Cb, 1.0)  # Cb ≥ 1.0
+        # F1-1: Untuk doubly symmetric, Cb ≥ 1.0 secara matematis
+        # Reduces to 1.0 pada uniform moment (no transverse loading)
+        return max(Cb, 1.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -542,12 +575,15 @@ class ShearCapacity:
 
     @staticmethod
     def design_minor(sec: SectionProperties) -> float:
-        """Minor axis shear (simplified — flange shear)."""
+        """Minor axis shear — AISC G6-1."""
         phi = 0.90
-        Fy = sec.Fy
-        Af = 2 * sec.bf * sec.tf  # Both flanges
-        Vn = 0.6 * Fy * Af
-        return phi * Vn
+        # G6-1: Vn = 0.6*Fy*bf*tf*Cv2 per shear resisting element (per flange)
+        # Cv2 = 1.0 for all ASTM A6/A6M W, S, M, HP shapes (Fy ≤ 485 MPa)
+        Cv2 = 1.0
+        Vn_per_flange = 0.6 * sec.Fy * sec.bf * sec.tf * Cv2
+        # I-shape: 2 flanges sebagai shear resisting elements
+        Vn_total = 2 * Vn_per_flange
+        return phi * Vn_total
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -832,9 +868,11 @@ class SteelDesignEngine:
         dp = elem.get("design_parameters", {})
         Kx = dp.get("Kx", 1.0)
         Ky = dp.get("Ky", 1.0)
+        Kz = dp.get("Kz", 1.0)        # E4: Torsional K factor (default 1.0)
         Lx = dp.get("Lx_mm", 4000.0)
         Ly = dp.get("Ly_mm", 4000.0)
         Lb = dp.get("Lb_mm", Ly)
+        Lcz = dp.get("Lcz_mm", Ly)    # E4: Torsional unbraced length (default=Ly)
 
         elem_id = str(elem["id"])
         elem_type = elem.get("type", "Column")
@@ -848,7 +886,8 @@ class SteelDesignEngine:
 
         # --- Compute capacities (once per element) ---
         PcTension = TensionCapacity.design(sec)
-        PcComp = CompressionCapacity.design(sec, Kx, Ky, Lx, Ly, axial_class)
+        PcComp = CompressionCapacity.design(sec, Kx, Ky, Lx, Ly, axial_class,
+                                            Kz=Kz, Lcz=Lcz)
 
         # For Cb: collect major moments from DeadLoad (or use default 1.0 initially)
         # We'll compute Cb per combo later if needed; use design_parameters Cb as default
