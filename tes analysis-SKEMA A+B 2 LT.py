@@ -565,7 +565,7 @@ def validate_sign_conventions(elements_data):
         elif elem_type == 'Beam':
             beam_total += 1
             # Check for proper moment distribution (max at midspan for uniform load)
-            max_M2 = max(abs(s.get('M2', 0)) for s in stations)
+            max_M2 = max(abs(s.get('My', 0)) for s in stations)
             if max_M2 > 0:
                 beam_moment_ok += 1
     
@@ -825,7 +825,7 @@ def run_load_case(data, case_type, pattern_def=None):
             My_loc = R[1][0]*F_global[3] + R[1][1]*F_global[4] + R[1][2]*F_global[5]
             Mz_loc = R[2][0]*F_global[3] + R[2][1]*F_global[4] + R[2][2]*F_global[5]
             
-            return {"P":Fx_loc, "V2":Fy_loc, "V3":Fz_loc, "T":Mx_loc, "M2":My_loc, "M3":Mz_loc}
+            return {"P":Fx_loc, "Fy":Fy_loc, "Fz":Fz_loc, "T":Mx_loc, "My":My_loc, "Mz":Mz_loc}
 
         def get_internal_forces_at_station(elem_id, ratio, local_axes, is_vertical=False):
             """
@@ -882,45 +882,40 @@ def run_load_case(data, case_type, pattern_def=None):
                     #   M3 = forces[4] = Weak axis moment = reaction M2 (larger)
                     return {
                         "P": -forces[2],    # Axial (local-x = Global Z) - compression negative
-                        "V2": -forces[0],   # Shear in Global X 
-                        "V3": forces[1],    # Shear in Global Y (raw - negate at output)
+                        "Fy": -forces[0],   # Shear in Global X 
+                        "Fz": forces[1],    # Shear in Global Y (raw - negate at output)
                         "T": forces[5],     # Torsion (raw - negate at output)
-                        "M2": -forces[3],   # Strong axis moment = reaction M1
-                        "M3": -forces[4]    # Weak axis moment = reaction M2 (larger)
+                        "My": -forces[3],   # Strong axis moment = reaction M1
+                        "Mz": -forces[4]    # Weak axis moment = reaction M2 (larger)
                     }
                 else:
-                    # BEAM internal force mapping:
+                    # BEAM internal force mapping (Revit default local axes):
                     #
-                    # For beam local axes:
+                    # With vecxz = [0,0,1] (Revit Z = vertical):
                     #   - local-x = element axis (horizontal, along beam length)
-                    #   - local-y = Global +Z (vertical, perpendicular to floor)
-                    #   - local-z = horizontal perpendicular to beam
-                    #           (Global -Y for X-beam, Global +X for Y-beam)
+                    #   - local-y = horizontal perpendicular to beam (MINOR axis)
+                    #   - local-z = Global +Z (vertical, MAJOR axis)
                     #
                     # OpenSees eleForce() returns:
                     #   forces[0] = P (axial along local-x)
-                    #   forces[1] = Vy (shear along local-y = vertical direction)
-                    #   forces[2] = Vz (shear along local-z = horizontal direction)
+                    #   forces[1] = Vy (shear along local-y = horizontal = MINOR)
+                    #   forces[2] = Vz (shear along local-z = vertical = MAJOR)
                     #   forces[3] = T (torsion about local-x)
-                    #   forces[4] = My (moment about local-y = about Global Z)
-                    #               -> This is the MAJOR bending from gravity
-                    #   forces[5] = Mz (moment about local-z = about horizontal)
-                    #               -> This is ~0 for gravity-only loading
+                    #   forces[4] = My (moment about local-y = MINOR ~0 for gravity)
+                    #   forces[5] = Mz (moment about local-z = MAJOR bending)
                     #
-                    # User convention:
-                    #   M2 = moment about local-y = ~0 for gravity (minor)
-                    #   M3 = moment about local-z = MAJOR bending from gravity
-                    #
-                    # To match user convention, SWAP M2/M3:
-                    #   M2 = forces[5] (Mz) ~0 for gravity (minor)
-                    #   M3 = forces[4] (My) = major bending moment
+                    # Revit convention:
+                    #   Fy = horizontal shear (minor)  = forces[1]
+                    #   Fz = vertical shear (major)    = forces[2]
+                    #   My = minor moment (~0)          = forces[4]
+                    #   Mz = major moment (bending)     = forces[5]
                     return {
                         "P": -forces[0],    # Axial
-                        "V2": -forces[2],   # Major shear (vertical) - matches SAP2000
-                        "V3": forces[1],   # Minor shear (horizontal)
-                        "T": forces[3],    # Torsion
-                        "M2": -forces[5],   # Minor moment (about horizontal ~0)
-                        "M3": forces[4]     # MAJOR moment - SAP2000 convention (negative at ends)
+                        "Fy": forces[1],    # Minor shear (horizontal) — Revit Fy
+                        "Fz": -forces[2],   # Major shear (vertical) — Revit Fz
+                        "T": forces[3],     # Torsion
+                        "My": -forces[4],   # Minor moment (~0) — Revit My
+                        "Mz": forces[5]     # MAJOR moment — Revit Mz
                     }
             
             # 12-component output: forces at both i-node and j-node
@@ -928,42 +923,42 @@ def run_load_case(data, case_type, pattern_def=None):
                 # COLUMN coordinate mapping
                 start_internal = {
                     "P": -forces[2],    # Axial at i-node
-                    "V2": -forces[0],   # Shear X at i-node
-                    "V3": forces[1],    # Shear Y at i-node (raw - negate at output)
+                    "Fy": -forces[0],   # Shear X at i-node
+                    "Fz": forces[1],    # Shear Y at i-node (raw - negate at output)
                     "T": forces[5],     # Torsion at i-node (raw - negate at output)
-                    "M2": -forces[3],   # Strong axis moment at i-node
-                    "M3": -forces[4]    # Weak axis moment at i-node
+                    "My": -forces[3],   # Strong axis moment at i-node
+                    "Mz": -forces[4]    # Weak axis moment at i-node
                 }
                 end_internal = {
                     "P": forces[8],     # Axial at j-node
-                    "V2": forces[6],    # Shear X at j-node
-                    "V3": -forces[7],   # Shear Y at j-node
+                    "Fy": forces[6],    # Shear X at j-node
+                    "Fz": -forces[7],   # Shear Y at j-node
                     "T": -forces[11],   # Torsion at j-node
-                    "M2": forces[9],    # Strong axis moment at j-node
-                    "M3": forces[10]    # Weak axis moment at j-node
+                    "My": forces[9],    # Strong axis moment at j-node
+                    "Mz": forces[10]    # Weak axis moment at j-node
                 }
             else:
-                # BEAM: M2=minor (~0), M3=major bending - SAP2000 convention
+                # BEAM (Revit default): Fy=minor(horizontal), Fz=major(vertical)
                 start_internal = {
                     "P": -forces[0],    # Axial at i-node
-                    "V2": -forces[2],   # Major shear (vertical) at i-node
-                    "V3": -forces[1],   # Minor shear (horizontal) at i-node
+                    "Fy": -forces[1],   # Minor shear (horizontal) at i-node
+                    "Fz": -forces[2],   # Major shear (vertical) at i-node
                     "T": -forces[3],    # Torsion at i-node
-                    "M2": -forces[5],   # Minor moment (~0) at i-node
-                    "M3": forces[4]     # MAJOR moment at i-node (SAP2000 convention)
+                    "My": -forces[4],   # Minor moment (~0) at i-node
+                    "Mz": forces[5]     # MAJOR moment at i-node
                 }
                 end_internal = {
                     "P": forces[6],     # Axial at j-node
-                    "V2": forces[8],    # Major shear (vertical) at j-node
-                    "V3": forces[7],    # Minor shear (horizontal) at j-node
+                    "Fy": forces[7],    # Minor shear (horizontal) at j-node
+                    "Fz": forces[8],    # Major shear (vertical) at j-node
                     "T": forces[9],     # Torsion at j-node
-                    "M2": forces[11],   # Minor moment (~0) at j-node
-                    "M3": -forces[10]   # MAJOR moment at j-node (SAP2000 convention)
+                    "My": forces[10],   # Minor moment (~0) at j-node
+                    "Mz": -forces[11]   # MAJOR moment at j-node
                 }
             
             # For intermediate stations, use linear interpolation
             interp = {}
-            for key in ["P", "V2", "V3", "T", "M2", "M3"]:
+            for key in ["P", "Fy", "Fz", "T", "My", "Mz"]:
                 interp[key] = start_internal[key] * (1 - ratio) + end_internal[key] * ratio
                 
             return interp
@@ -972,9 +967,9 @@ def run_load_case(data, case_type, pattern_def=None):
             """
             Calculate exact intermediate forces using structural mechanics.
             
-            Key relationships (SAP2000 convention):
-            - V2 (major shear in local Y) drives M3 (moment about local Z): dM3/dx = V2
-            - V3 (minor shear in local Z) drives M2 (moment about local Y): dM2/dx = V3
+            Key relationships (Revit convention):
+            - Fz (major shear, vertical) drives Mz (major moment): dMz/dx = Fz
+            - Fy (minor shear, horizontal) drives My (minor moment): dMy/dx = Fy
             
             For uniformly loaded element:
             - V(x) = V_start - w*x  (linear shear)
@@ -987,46 +982,41 @@ def run_load_case(data, case_type, pattern_def=None):
             interp = {}
             x = ratio * length_mm
             
-            # ===== MAJOR AXIS: V2 drives M3 =====
-            v2_s = start_f["V2"]
-            v2_e = end_f["V2"]
-            m3_s = start_f["M3"]
+            # ===== MAJOR AXIS: Fz (vertical shear) drives Mz (major moment) =====
+            fz_s = start_f["Fz"]
+            fz_e = end_f["Fz"]
+            mz_s = start_f["Mz"]
             
             # Equivalent distributed load (major axis)
-            # W2_total = w*L where w is the uniform load intensity
-            # From equilibrium: V_end = V_start - w*L, so w*L = V_start - V_end
-            W2_total = v2_s - v2_e
+            W_major = fz_s - fz_e
             
-            # Shear V2(x) = V2_start - w*x = V2_start - (W2_total/L)*x
-            v2_x = v2_s - W2_total * ratio
+            # Shear Fz(x) = Fz_start - (W_major/L)*x
+            fz_x = fz_s - W_major * ratio
             
-            # SAP2000 Convention: dM3/dx = -V2 (NEGATIVE relationship)
-            # When V2 is negative, M3 INCREASES (integration with negative sign)
-            # M3(x) = M3_start - V2_start*x + w*x²/2
-            # M3(x) = M3_start - V2_start*x + (W2_total/L)*x²/2
-            m3_x = m3_s - v2_s * x + (W2_total / length_mm) * (x**2) / 2.0
+            # dMz/dx = -Fz (NEGATIVE relationship)
+            # Mz(x) = Mz_start - Fz_start*x + (W_major/L)*x²/2
+            mz_x = mz_s - fz_s * x + (W_major / length_mm) * (x**2) / 2.0
             
-            interp["V2"] = v2_x
-            interp["M3"] = m3_x
+            interp["Fz"] = fz_x
+            interp["Mz"] = mz_x
             
-            # ===== MINOR AXIS: V3 drives M2 =====
-            v3_s = start_f["V3"]
-            v3_e = end_f["V3"]
-            m2_s = start_f["M2"]
+            # ===== MINOR AXIS: Fy (horizontal shear) drives My (minor moment) =====
+            fy_s = start_f["Fy"]
+            fy_e = end_f["Fy"]
+            my_s = start_f["My"]
             
             # Equivalent distributed load (minor axis)
-            W3_total = v3_s - v3_e
+            W_minor = fy_s - fy_e
             
-            # Shear V3(x) = V3_start - (W3_total/L)*x
-            v3_x = v3_s - W3_total * ratio
+            # Shear Fy(x) = Fy_start - (W_minor/L)*x
+            fy_x = fy_s - W_minor * ratio
             
-            # SAP2000 Convention: dM2/dx = -V3 (NEGATIVE relationship)
-            # When V3 is negative, M2 INCREASES (integration with negative sign)
-            # M2(x) = M2_start - V3_start*x + (W3_total/L)*x²/2
-            m2_x = m2_s - v3_s * x + (W3_total / length_mm) * (x**2) / 2.0
+            # dMy/dx = -Fy (NEGATIVE relationship)
+            # My(x) = My_start - Fy_start*x + (W_minor/L)*x²/2
+            my_x = my_s - fy_s * x + (W_minor / length_mm) * (x**2) / 2.0
             
-            interp["V3"] = v3_x
-            interp["M2"] = m2_x
+            interp["Fy"] = fy_x
+            interp["My"] = my_x
             
             # ===== AXIAL FORCE P =====
             # For self-weight, axial load decreases along element (from base to top)
@@ -1107,13 +1097,13 @@ def run_load_case(data, case_type, pattern_def=None):
             
             critical_stations = list(sample_stations) # Copy
             
-            # 3. Analytic Zero Crossings for Shear (V2, V3) -> Max Moment
-            # Check V2 -> Max M3
-            zero_v2 = find_zero_crossing(f_start, f_end, 'V2', length_mm)
+            # 3. Analytic Zero Crossings for Shear → Max Moment
+            # Check Fz (major shear) → Max Mz (major moment)
+            zero_v2 = find_zero_crossing(f_start, f_end, 'Fz', length_mm)
             if zero_v2: critical_stations.append(zero_v2)
 
-            # Check V3 -> Max M2
-            zero_v3 = find_zero_crossing(f_start, f_end, 'V3', length_mm)
+            # Check Fy (minor shear) → Max My (minor moment)
+            zero_v3 = find_zero_crossing(f_start, f_end, 'Fy', length_mm)
             if zero_v3: critical_stations.append(zero_v3)
             
             # 4. Check Zero Crossings for Moment (Inflection Points)
@@ -1469,7 +1459,7 @@ def run_load_case(data, case_type, pattern_def=None):
             if item['is_vertical']:
                 vecxz = local_axes.get('y_axis', [1, 0, 0])
             else:
-                vecxz = local_axes.get('z_axis', [0, -1, 0])
+                vecxz = local_axes.get('z_axis', [0, 0, 1])
             
             # Calculate rigid end zone offsets
             dI = [0.0, 0.0, 0.0]  # Offset at i-node (global)
@@ -1578,10 +1568,10 @@ def run_load_case(data, case_type, pattern_def=None):
             #   - F2 (Global Y) → bending about Global X → bending about local-z  
             #     Uses Ops_Iz → Should use WEAK axis (Iy)
             #
-            # For BEAM (horizontal):
-            #   - Local Y = Vertical (Global Z)
-            #   - Local Z = Horizontal
-            #   - Ops_Iy = Weak (Iy), Ops_Iz = Strong (Iz) - standard convention
+            # For BEAM (horizontal, vecxz=[0,0,1]):
+            #   - Local Y = Horizontal (perpendicular to beam)
+            #   - Local Z = Vertical (Global Z)
+            #   - Ops_Iy = Strong (Iz), Ops_Iz = Weak (Iy) — swapped!
             
             if item['is_vertical']:
                 # COLUMN: Swap to align strong axis with F1 (Global X)
@@ -1593,9 +1583,12 @@ def run_load_case(data, case_type, pattern_def=None):
                 # Avz_JSON (3048mm2) -> web/Y-shear -> local-y shear
                 # NOTE: no swap — JSON Avy/Avz already match OpenSees local-y/z for columns
             else:
-                # BEAM: Standard convention (gravity is in local-z direction for beam)
-                Ops_Iy = Iy  # Weak axis  -> minor moment
-                Ops_Iz = Iz  # Strong axis -> major moment
+                # BEAM (Revit default vecxz=[0,0,1]):
+                # local-y = horizontal, local-z = vertical
+                # Iy (OpenSees) = I about local-y → resists vertical (major) forces
+                # Iz (OpenSees) = I about local-z → resists horizontal (minor) forces
+                Ops_Iy = Iz  # Strong axis → bending about local-y resists vertical
+                Ops_Iz = Iy  # Weak axis   → bending about local-z resists horizontal
             
             if item['is_vertical']:
                 # --- KOLOM (SINGLE ELEMENT) ---
@@ -1739,8 +1732,9 @@ def run_load_case(data, case_type, pattern_def=None):
                          # Column: axial load (distributed along axis)
                          ops.eleLoad('-ele', eid, '-type', '-beamUniform', 0.0, 0.0, -w_dead) 
                      else:
-                         # Beam: distributed vertical load (SAP2000 uses distributed)
-                         ops.eleLoad('-ele', eid, '-type', '-beamUniform', -w_dead, 0.0, 0.0)
+                         # Beam: gravity in local-z direction (vertical with vecxz=[0,0,1])
+                         # beamUniform args: Wy(local-y=horiz), Wz(local-z=vert), Wx(axial)
+                         ops.eleLoad('-ele', eid, '-type', '-beamUniform', 0.0, -w_dead, 0.0)
         # B. SLAB/FLOOR PRESSURE LOADS - TWO-WAY YIELD LINE DISTRIBUTION
         # Implements proper tributary area calculation with 45-degree bisectors
         # Short span beams get triangle loads, long span beams get trapezoid loads
@@ -1838,7 +1832,8 @@ def run_load_case(data, case_type, pattern_def=None):
                             q_end = get_q(seg_end_x, beam_len, q_max, x_c_p, is_triangle)
                             q_avg = (q_start + q_end) / 2.0
                             
-                            ops.eleLoad('-ele', eid, '-type', '-beamUniform', -q_avg, 0.0)
+                            # Floor load: gravity in local-z direction (vertical with vecxz=[0,0,1])
+                            ops.eleLoad('-ele', eid, '-type', '-beamUniform', 0.0, -q_avg)
                             
                             load_on_seg = q_avg * seg_len
                             total_applied_force_z -= load_on_seg
@@ -1950,11 +1945,11 @@ def run_load_case(data, case_type, pattern_def=None):
                                   "station": round(station_ratio, 4),
                                   "distance_mm": round(actual_distance, 2),  # Actual distance
                                   "P":  round(forces["P"], 2),
-                                  "V2": round(forces["V2"], 2),
-                                  "V3": round(col_sign * forces["V3"], 2),  # Negate for columns
+                                  "Fy": round(forces["Fy"], 2),
+                                  "Fz": round(col_sign * forces["Fz"], 2),  # Negate for columns
                                   "T":  round(col_sign * forces["T"], 2),   # Negate for columns
-                                  "M2": round(-forces["M2"], 2),  # SAP2000 sign convention
-                                  "M3": round(forces["M3"], 2)
+                                  "My": round(-forces["My"], 2),  # SAP2000 sign convention
+                                  "Mz": round(forces["Mz"], 2)
                               })
                           
                           # Calculate max deflection for this element
@@ -1985,25 +1980,26 @@ def run_load_case(data, case_type, pattern_def=None):
                                 # For FIRST sub-element, include i-node (station 0)
                                 if i == 0:
                                     # Extract i-node forces (indices 0-5)
-                                    # BEAM mapping: P=0, V2=2, V3=1, T=3, M2=5, M3=4
+                                    # BEAM mapping (Revit default vecxz=[0,0,1]):
+                                    # Fy=1(minor/horiz), Fz=2(major/vert), My=4(minor), Mz=5(major)
                                     i_forces = {
                                         "P": -forces_raw[0],
-                                        "V2": -forces_raw[2],
-                                        "V3": -forces_raw[1],
+                                        "Fy": -forces_raw[1],   # Minor shear (horizontal)
+                                        "Fz": -forces_raw[2],   # Major shear (vertical)
                                         "T": -forces_raw[3],
-                                        "M2": -forces_raw[5],
-                                        "M3": forces_raw[4]
+                                        "My": -forces_raw[4],   # Minor moment
+                                        "Mz": forces_raw[5]     # Major moment
                                     }
                                     
                                     stations_output.append({
                                         "station": 0.0,
                                         "distance_mm": 0.0,
                                         "P":  round(i_forces["P"], 2),
-                                        "V2": round(i_forces["V2"], 2),
-                                        "V3": round(i_forces["V3"], 2),
+                                        "Fy": round(i_forces["Fy"], 2),
+                                        "Fz": round(i_forces["Fz"], 2),
                                         "T":  round(i_forces["T"], 2),
-                                        "M2": round(-i_forces["M2"], 2),
-                                        "M3": round(i_forces["M3"], 2)
+                                        "My": round(-i_forces["My"], 2),
+                                        "Mz": round(i_forces["Mz"], 2)
                                     })
                                 
                                 # Always include j-node (end of this sub-element)
@@ -2013,22 +2009,22 @@ def run_load_case(data, case_type, pattern_def=None):
                                 
                                 j_forces = {
                                     "P": forces_raw[6],
-                                    "V2": forces_raw[8],
-                                    "V3": forces_raw[7],
+                                    "Fy": forces_raw[7],    # Minor shear (horizontal)
+                                    "Fz": forces_raw[8],    # Major shear (vertical)
                                     "T": forces_raw[9],
-                                    "M2": forces_raw[11],
-                                    "M3": -forces_raw[10]
+                                    "My": forces_raw[10],   # Minor moment
+                                    "Mz": -forces_raw[11]   # Major moment
                                 }
                                 
                                 stations_output.append({
                                     "station": round(global_ratio, 4),
                                     "distance_mm": round(j_dist, 2),
                                     "P":  round(j_forces["P"], 2),
-                                    "V2": round(j_forces["V2"], 2),
-                                    "V3": round(j_forces["V3"], 2),
+                                    "Fy": round(j_forces["Fy"], 2),
+                                    "Fz": round(j_forces["Fz"], 2),
                                     "T":  round(j_forces["T"], 2),
-                                    "M2": round(-j_forces["M2"], 2),
-                                    "M3": round(j_forces["M3"], 2)
+                                    "My": round(-j_forces["My"], 2),
+                                    "Mz": round(j_forces["Mz"], 2)
                                 })
                                 
                                 cumulative_dist += sub_len
@@ -2393,7 +2389,10 @@ def run_seismic_analysis(data, direction='EQx'):
             
             # Local axes
             local_axes = item['raw'].get('local_axes', {})
-            vecxz = local_axes.get('y_axis', [0, 1, 0])
+            if item['is_vertical']:
+                vecxz = local_axes.get('y_axis', [1, 0, 0])
+            else:
+                vecxz = local_axes.get('z_axis', [0, 0, 1])
             
             # Map to OpenSees convention (same as run_load_case)
             if item['is_vertical']:
@@ -2403,11 +2402,14 @@ def run_seismic_analysis(data, direction='EQx'):
                 Ops_Avy = Avz # web shear   -> local-y (Y-direction)
                 Ops_Avz = Avy # flange shear-> local-z (X-direction)
             else:
-                # BEAM: standard convention
-                Ops_Iy = Iy   # weak axis
-                Ops_Iz = Iz   # strong axis
-                Ops_Avy = Avz # web shear -> vertical (local-y)
-                Ops_Avz = Avy # flange    -> horizontal (local-z)
+                # BEAM (Revit default vecxz=[0,0,1]):
+                # OpenSees local-y = horizontal, local-z = vertical
+                # Iy (OpenSees) = I about local-y → resists vertical (major) forces
+                # Iz (OpenSees) = I about local-z → resists horizontal (minor) forces
+                Ops_Iy = Iz   # strong axis → bending about local-y resists vertical
+                Ops_Iz = Iy   # weak axis   → bending about local-z resists horizontal
+                Ops_Avy = Avy # flange shear → horizontal (local-y)
+                Ops_Avz = Avz # web shear   → vertical (local-z)
             
             # Rigid end zone offsets
             dI = [0.0, 0.0, 0.0]
@@ -3247,7 +3249,7 @@ def combine_load_cases(results, combo_config, load_patterns):
         for pat_name in available:
             all_elem_ids.update(results[pat_name].get('elements', {}).keys())
 
-        force_keys = ['P', 'V2', 'V3', 'T', 'M2', 'M3']
+        force_keys = ['P', 'Fy', 'Fz', 'T', 'My', 'Mz']
 
         for eid in all_elem_ids:
             # Get element structure from first available pattern
