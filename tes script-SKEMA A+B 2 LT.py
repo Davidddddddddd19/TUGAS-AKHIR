@@ -51,6 +51,7 @@ HEIGHT_MM   = 4000
 # ============================================================
 
 COLUMN_ROTATION_DEG = 0
+BEAM_ANALYTICAL_ROTATION_DEG = 0  # Rotasi analytical beam (derajat), default 0 = Revit default
 
 # 4. Join Status untuk Structural Framing (Beam)
 # True = Allow Join at ends, False = Disallow Join at ends
@@ -1394,50 +1395,59 @@ def get_local_axes(element, doc):
     """
     Extract/Construct local coordinate system.
     For Columns: Uses COLUMN_ROTATION_DEG to manually construct rotated axes (Right-Hand Rule).
-    For Beams: Extract from element Transform.
+    For Beams: Use Revit default axes + read analytical CrossSectionRotation.
+    
+    Revit Default Beam Axes:
+      X = Along beam (longitudinal)
+      Y = Horizontal (flange width direction, MINOR axis)
+      Z = Vertical (web depth direction, MAJOR axis)
     """
     local_axes = {
         "x_axis": [1.0, 0.0, 0.0],
         "y_axis": [0.0, 1.0, 0.0],
         "z_axis": [0.0, 0.0, 1.0],
-        #"rotation_angle_deg": 0.0
     }
     
     try:
         cat_id = element.Category.Id.IntegerValue
         
         if cat_id == int(BuiltInCategory.OST_StructuralFraming):
-            # BEAM: Extract from Transform
+            # BEAM: Use Revit default axes (no -90° rotation)
             transform = element.GetTransform()
             
-            # Basis vectors (Original from Revit)
-            # Revit Beam: X=Longitudinal, Y=Horizontal(Width), Z=Vertical(Depth)
+            # Revit Beam default basis:
+            # X = Longitudinal (along beam)
+            # Y = Horizontal (flange width, minor axis)
+            # Z = Vertical (web depth, major axis)
             orig_x = [transform.BasisX.X, transform.BasisX.Y, transform.BasisX.Z]
             orig_y = [transform.BasisY.X, transform.BasisY.Y, transform.BasisY.Z]
             orig_z = [transform.BasisZ.X, transform.BasisZ.Y, transform.BasisZ.Z]
-
-            # APPLY ROTATION -90 DEG ABOUT X-AXIS
-            # Analysis expects: Local Y aligned with Global Z (Vertical)
-            # R_x(-90): New Y = Old Z, New Z = -Old Y
             
-            # New Basis Vectors
-            new_x = orig_x
-            new_y = orig_z
-            new_z = [-orig_y[0], -orig_y[1], -orig_y[2]]
+            # Read analytical CrossSectionRotation (user override)
+            rot_rad = 0.0
+            try:
+                am = element.GetAnalyticalModel()
+                if am is not None:
+                    rot_rad = am.CrossSectionRotation
+            except:
+                pass
             
-            local_axes["x_axis"] = [round(v, 6) for v in new_x]
+            # Apply rotation about x-axis if non-zero
+            if abs(rot_rad) > 0.001:
+                cos_r = math.cos(rot_rad)
+                sin_r = math.sin(rot_rad)
+                new_y = [cos_r*orig_y[i] + sin_r*orig_z[i] for i in range(3)]
+                new_z = [-sin_r*orig_y[i] + cos_r*orig_z[i] for i in range(3)]
+            else:
+                new_y = orig_y
+                new_z = orig_z
+            
+            local_axes["x_axis"] = [round(v, 6) for v in orig_x]
             local_axes["y_axis"] = [round(v, 6) for v in new_y]
             local_axes["z_axis"] = [round(v, 6) for v in new_z]
             
-            #local_axes["rotation_angle_deg"] = -90.0
-            
-            # Determine Web Direction based on New Basis
-            # Web is usually along local Y (Depth direction for I-beam in analysis convention?)
-            # Or is it Z?
-            # Revit: Z is Depth (Web).
-            # We mapped Old Z -> New Y.
-            # So New Y is Web direction.
-            local_axes["web_direction"] = "y_axis"
+            # Web = depth direction = Z axis (Revit default)
+            local_axes["web_direction"] = "z_axis"
                 
         elif cat_id == int(BuiltInCategory.OST_StructuralColumns):
             # COLUMN: Manual Construction based on COLUMN_ROTATION_DEG
@@ -1448,34 +1458,19 @@ def get_local_axes(element, doc):
             cos_t = math.cos(theta_rad)
             sin_t = math.sin(theta_rad)
             
-            # Global X and Y rotated by theta around Global Z
-            # New Local Y (was Global X)
+            # Local Y (was Global X, rotated)
             ly_x = cos_t
             ly_y = sin_t
             ly_z = 0.0
             
-            # New Local Z (was Global Y)
-            # Standard 2D rotation: x' = x c - y s, y' = x s + y c
-            # Mapping: GX -> LY, GY -> LZ
-            # LZ is rotated GY.
-            # Vector (0,1) rotated by theta is (-sin, cos)
+            # Local Z (was Global Y, rotated)
             lz_x = -sin_t
             lz_y = cos_t
             lz_z = 0.0
             
-            local_axes["x_axis"] = [0.0, 0.0, 1.0] # Always Vertical
+            local_axes["x_axis"] = [0.0, 0.0, 1.0]  # Always Vertical
             local_axes["y_axis"] = [round(ly_x, 6), round(ly_y, 6), round(ly_z, 6)]
             local_axes["z_axis"] = [round(lz_x, 6), round(lz_y, 6), round(lz_z, 6)]
-            
-            # Set explicit rotation value
-            #local_axes["rotation_angle_deg"] = float(COLUMN_ROTATION_DEG)
-            
-            # Remove web_direction for columns (Requested by User)
-            if "web_direction" in local_axes:
-                 # Dictionary keys are strings, but we didn't add it in the default dict above? 
-                 # Wait, I removed "web_direction" from the default dict above in this replacement content.
-                 # Ah, for beams I added it. For columns I just don't add it.
-                 pass
 
     except Exception as e:
         pass
@@ -2134,8 +2129,8 @@ try:
                             # Apply ANALYTICAL_COLUMN_ROTATION_DEG (user override only, no default)
                             rotation_deg = 0 + COLUMN_ROTATION_DEG
                         elif is_beam:
-                            # Apply DEFAULT (-90°) + USER OVERRIDE for beams
-                            rotation_deg = -90
+                            # Apply analytical rotation for beams
+                            rotation_deg = BEAM_ANALYTICAL_ROTATION_DEG
                         else:
                             continue
                         
@@ -2857,7 +2852,7 @@ if json_success:
                                 data_elem = []
                                 
                                 # Reset Variabel Max/Min Stats untuk semua komponen
-                                components = ["p", "v2", "v3", "t", "m2", "m3"]
+                                components = ["P", "V2", "V3", "T", "M2", "M3"]
                                 # Init dengan +/- infinity
                                 stats = {k: {"max": -1.0e20, "max_id": "-", "min": 1.0e20, "min_id": "-"} for k in components}
 
@@ -2903,17 +2898,17 @@ if json_success:
                                             for station_data in stations:
                                                 station_loc = station_data.get('station', 0.0)
                                                 p_val = station_data.get('P', 0.0)
-                                                v2_val = station_data.get('V2', 0.0)
-                                                v3_val = station_data.get('V3', 0.0)
+                                                fy_val = station_data.get('Fy', 0.0)  # V2: shear in local Y
+                                                fz_val = station_data.get('Fz', 0.0)  # V3: shear in local Z
                                                 t_val = station_data.get('T', 0.0)
-                                                m2_val = station_data.get('M2', 0.0)
-                                                m3_val = station_data.get('M3', 0.0)
+                                                my_val = station_data.get('My', 0.0)  # M2: moment about local Y
+                                                mz_val = station_data.get('Mz', 0.0)  # M3: moment about local Z
 
                                                 # --- UPDATE STATISTIK MAKSIMUM & MINIMUM ---
                                                 id_display = "[{}] {}".format(eid, elem_name)
                                                 current_vals = {
-                                                    "p": p_val, "v2": v2_val, "v3": v3_val, 
-                                                    "t": t_val, "m2": m2_val, "m3": m3_val
+                                                    "P": p_val, "V2": fy_val, "V3": fz_val, 
+                                                    "T": t_val, "M2": my_val, "M3": mz_val
                                                 }
                                                 
                                                 for k in components:
@@ -2933,11 +2928,11 @@ if json_success:
                                                     elem_name,
                                                     "{:.2f}".format(station_loc),  # Station location
                                                     round(p_val, 2),
-                                                    round(v2_val, 2),
-                                                    round(v3_val, 2),
+                                                    round(fy_val, 2),
+                                                    round(fz_val, 2),
                                                     round(t_val, 2),
-                                                    round(m2_val, 2),
-                                                    round(m3_val, 2)
+                                                    round(my_val, 2),
+                                                    round(mz_val, 2)
                                                 ])
                                         
                                         except Exception as e_inner:
@@ -2962,9 +2957,9 @@ if json_success:
                                     # TAMPILKAN SUMMARY KOMPREHENSIF (Max & Min)
                                     summary_rows = []
                                     labels = {
-                                        "p": "Axial (P)", "t": "Torsi (T)", 
-                                        "v2": "Shear (V2)", "v3": "Shear (V3)",
-                                        "m2": "Momen (M2)", "m3": "Momen (M3)"
+                                        "P": "Axial (P)", "T": "Torsi (T)", 
+                                        "V2": "Shear (V2)", "V3": "Shear (V3)",
+                                        "M2": "Momen (M2)", "M3": "Momen (M3)"
                                     }
                                     
                                     for k in components:
@@ -2976,7 +2971,7 @@ if json_success:
                                         if min_v > 1.0e19: min_v = 0.0
                                         
                                         # Tentukan satuan: N untuk gaya, Nmm untuk momen/torsi
-                                        unit = "N" if k in ["p", "v2", "v3"] else "Nmm"
+                                        unit = "N" if k in ["P", "V2", "V3"] else "Nmm"
                                         
                                         summary_rows.append([
                                             labels[k],
