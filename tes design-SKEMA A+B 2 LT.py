@@ -80,13 +80,13 @@ class SectionProperties:
 
 @dataclass
 class DesignForces:
-    """Design forces at a specific station (N, N·mm)."""
+    """Design forces at a specific station (N, N·mm). Revit convention."""
     P: float = 0.0    # Axial force (N) — positive = compression
-    V2: float = 0.0   # Major shear (N)
-    V3: float = 0.0   # Minor shear (N)
+    Fy: float = 0.0   # Minor shear (N) — Revit Fy (horizontal)
+    Fz: float = 0.0   # Major shear (N) — Revit Fz (vertical)
     T: float = 0.0    # Torsion (N·mm)
-    M2: float = 0.0   # Minor moment (N·mm)
-    M3: float = 0.0   # Major moment (N·mm)
+    My: float = 0.0   # Minor moment (N·mm) — Revit My
+    Mz: float = 0.0   # Major moment (N·mm) — Revit Mz
 
 
 @dataclass
@@ -603,12 +603,12 @@ class PMMCheck:
 
         # Applied forces (absolute values for design)
         Pr = abs(forces.P)
-        MrMajor = abs(forces.M3)  # M3 = major moment
-        MrMinor = abs(forces.M2)  # M2 = minor moment
+        MrMajor = abs(forces.Mz)  # Mz = major moment (Revit)
+        MrMinor = abs(forces.My)  # My = minor moment (Revit)
 
         result.Pr = forces.P      # Keep sign for reporting
-        result.MrMajor = forces.M3
-        result.MrMinor = forces.M2
+        result.MrMajor = forces.Mz
+        result.MrMinor = forces.My
 
         # Select Pc based on compression or tension
         if forces.P >= 0:
@@ -746,7 +746,7 @@ class LoadCombiner:
         """
         factors = LoadCombiner.COMBINATIONS[combo_name]
         result = DesignForces()
-        force_keys = ["P", "V2", "V3", "T", "M2", "M3"]
+        force_keys = ["P", "Fy", "Fz", "T", "My", "Mz"]
 
         for lc_name, factor in factors.items():
             if lc_name not in analysis:
@@ -929,7 +929,7 @@ class SteelDesignEngine:
             major_moments = []
             for si in range(n_stations):
                 f = LoadCombiner.combine_station(si, elem_id, analysis, combo_name)
-                major_moments.append(f.M3)
+                major_moments.append(f.Mz)
 
             # Calculate Cb for this combo
             Cb_combo = FlexureCapacity.calc_Cb(major_moments)
@@ -961,11 +961,11 @@ class SteelDesignEngine:
                     best_pmm_location = dist
 
                 # Shear check
-                v_ratio = abs(forces.V2) / PhiVnMajor if PhiVnMajor > 0 else 0
-                v3_ratio = abs(forces.V3) / PhiVnMinor if PhiVnMinor > 0 else 0
+                v_ratio = abs(forces.Fz) / PhiVnMajor if PhiVnMajor > 0 else 0
+                v3_ratio = abs(forces.Fy) / PhiVnMinor if PhiVnMinor > 0 else 0
                 if v_ratio > best_shear.VMajorRatio or best_shear_combo == "":
                     best_shear = ShearResult(
-                        VrMajor=forces.V2,
+                        VrMajor=forces.Fz,
                         PhiVnMajor=PhiVnMajor,
                         VMajorRatio=v_ratio
                     )
