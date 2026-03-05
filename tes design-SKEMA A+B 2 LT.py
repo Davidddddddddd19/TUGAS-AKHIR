@@ -856,7 +856,10 @@ class SteelDesignEngine:
               f"({max_dcr.frame_label}, {max_dcr.governing_combo})")
         print(f"{'=' * 70}")
 
-        # 4. Write output
+        # 4. Build fabrication groups for columns
+        self.fab_groups = self._build_fabrication_groups()
+
+        # 5. Write output
         self._write_output()
         print(f"\n  Output ditulis: {self.output_path}")
 
@@ -1005,7 +1008,7 @@ class SteelDesignEngine:
             gov_moments = []
             for si in range(n_stations):
                 f = LoadCombiner.combine_station(si, elem_id, analysis, best_pmm_combo)
-                gov_moments.append(f.M3)
+                gov_moments.append(f.Mz)
             cap.Cb = FlexureCapacity.calc_Cb(gov_moments)
             cap.McMajor = FlexureCapacity.design_major(sec, Lb, cap.Cb, flex_class)
 
@@ -1059,6 +1062,137 @@ class SteelDesignEngine:
             Fu=Fu
         )
 
+    def _build_fabrication_groups(self) -> List[Dict]:
+        """Group columns by (X,Y) coordinate and compute max DCR per fabrication segment."""
+        model_elements = self.data["model_data"]["model_elements"]
+        seismic_params = self.data.get("model_data", {}).get("seismic_parameters", {})
+        
+        FAB_MAX = seismic_params.get("COL_FAB_MAX_LENGTH_MM", 12000) if seismic_params else 12000
+        SPLICE_OFFSET = seismic_params.get("COL_SPLICE_OFFSET_MM", 1500) if seismic_params else 1500
+        HEIGHT_MM = seismic_params.get("HEIGHT_MM", 4000) if seismic_params else 4000
+        N_STORY = seismic_params.get("N_STORY", 2) if seismic_params else 2
+        effective_max = FAB_MAX - SPLICE_OFFSET
+        
+        # Build elem_id -> result mapping
+        result_map = {r.element_id: r for r in self.results}
+        
+        # Build elem_id -> model_element mapping (for topology)
+        elem_map = {}
+        for elem in model_elements:
+            elem_map[elem["id"]] = elem
+        
+        # Group columns by (X, Y) coordinate
+        col_groups = {}  # key: (x_rounded, y_rounded) -> list of (elem_id, base_z)
+        for r in self.results:
+            if r.design_type != "Column":
+                continue
+            elem = elem_map.get(r.element_id)
+            if not elem:
+                continue
+            topo = elem.get("topology", {})
+            start = topo.get("start_node", [0, 0, 0])
+            x, y, z = round(start[0], 0), round(start[1], 0), start[2]
+            key = (x, y)
+            col_groups.setdefault(key, []).append({
+                "element_id": r.element_id,
+                "frame_label": r.frame_label,
+                "base_z": z,
+                "governing_ratio": r.governing_ratio,
+                "governing_combo": r.governing_combo,
+                "status": r.status
+            })
+        
+        # Calculate fabrication segments for each grid position
+        level_elevations = [k * HEIGHT_MM for k in range(N_STORY + 1)]
+        
+        # Determine segment boundaries (same logic as script.py)
+        total_height = N_STORY * HEIGHT_MM
+        fab_seg_boundaries = []  # List of (base_idx, top_idx)
+        if total_height <= effective_max:
+            fab_seg_boundaries = [(0, N_STORY)]
+        else:
+            seg_start = 0
+            for k in range(1, N_STORY + 1):
+                base_elev = level_elevations[seg_start]
+                if seg_start > 0:
+                    base_elev += SPLICE_OFFSET
+                top_splice = level_elevations[k] + SPLICE_OFFSET
+                seg_length = top_splice - base_elev
+                
+                if seg_length >= FAB_MAX:
+                    if k - 1 > seg_start:
+                        fab_seg_boundaries.append((seg_start, k - 1))
+                        seg_start = k - 1
+                
+                if k == N_STORY:
+                    fab_seg_boundaries.append((seg_start, k))
+        
+        # Build output with group naming (A, B, C, ...)
+        fab_groups_output = []
+        group_letter_idx = 0
+        for (gx, gy), columns in sorted(col_groups.items()):
+            # Sort columns by base elevation
+            columns.sort(key=lambda c: c["base_z"])
+            
+            # Assign columns to fabrication segments
+            segments = []
+            for seg_idx, (seg_base_idx, seg_top_idx) in enumerate(fab_seg_boundaries):
+                seg_base_elev = level_elevations[seg_base_idx]
+                seg_top_elev = level_elevations[seg_top_idx]
+                
+                # Find columns within this segment elevation range
+                seg_columns = [c for c in columns
+                               if c["base_z"] >= seg_base_elev - 1 and c["base_z"] < seg_top_elev + 1]
+                
+                if seg_columns:
+                    max_dcr_col = max(seg_columns, key=lambda c: c["governing_ratio"])
+                    segments.append({
+                        "segment_id": seg_idx + 1,
+                        "base_level": seg_base_idx + 1,
+                        "top_level": seg_top_idx + 1,
+                        "elements": [c["element_id"] for c in seg_columns],
+                        "frame_labels": [c["frame_label"] for c in seg_columns],
+                        "fab_dcr": round(max_dcr_col["governing_ratio"], 6),
+                        "governing_element": max_dcr_col["element_id"],
+                        "governing_combo": max_dcr_col["governing_combo"]
+                    })
+            
+            if segments:
+                # Generate group name: A, B, C, ... AA, AB, ...
+                if group_letter_idx < 26:
+                    group_name = chr(65 + group_letter_idx)  # A-Z
+                else:
+                    group_name = chr(64 + group_letter_idx // 26) + chr(65 + group_letter_idx % 26)
+                
+                overall_max = max(s["fab_dcr"] for s in segments)
+                fab_groups_output.append({
+                    "group_name": f"Column Group {group_name}",
+                    "grid_position": f"({gx:.0f}, {gy:.0f})",
+                    "grid_x_mm": gx,
+                    "grid_y_mm": gy,
+                    "total_segments": len(segments),
+                    "max_fab_dcr": round(overall_max, 6),
+                    "segments": segments
+                })
+                group_letter_idx += 1
+        
+        # Console output
+        if fab_groups_output:
+            print(f"\n{'=' * 70}")
+            print(f"  FABRICATION COLUMN GROUPS - Max DCR per Group")
+            print(f"{'=' * 70}")
+            print(f"  {'Group':<18} {'Grid Position':<20} {'Seg':>4} {'Max DCR':>10} {'Status'}")
+            print(f"{'=' * 70}")
+            for g in fab_groups_output:
+                status = "OK" if g["max_fab_dcr"] <= 1.0 else "NG"
+                print(f"  {g['group_name']:<18} {g['grid_position']:<20} {g['total_segments']:>4} "
+                      f"{g['max_fab_dcr']:>10.4f} {status}")
+            print(f"{'=' * 70}")
+            max_fab = max(fab_groups_output, key=lambda g: g["max_fab_dcr"])
+            print(f"  Max Fab DCR: {max_fab['max_fab_dcr']:.4f} - {max_fab['group_name']} {max_fab['grid_position']}")
+        
+        return fab_groups_output
+
     def _write_output(self):
         """Write Design Result.json."""
         output = {
@@ -1080,7 +1214,8 @@ class SteelDesignEngine:
                 "failed": sum(1 for r in self.results if r.status != "OK"),
                 "max_DCR": None
             },
-            "elements": []
+            "elements": [],
+            "fabrication_groups": []
         }
 
         # Find max DCR
@@ -1142,6 +1277,9 @@ class SteelDesignEngine:
                 "station_details": r.station_details if r.station_details else []
             }
             output["elements"].append(elem_out)
+
+        # Add fabrication groups
+        output["fabrication_groups"] = self.fab_groups if self.fab_groups else []
 
         with open(self.output_path, 'w') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
