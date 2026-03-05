@@ -49,9 +49,10 @@ SPAN_Y_MM   = 4000
 HEIGHT_MM   = 4000     
 
 # Fabrication Constants
-COL_FAB_MAX_LENGTH_MM = 12000   # Panjang maks kolom fabrikasi (mm)
-COL_SPLICE_OFFSET_MM  = 1500    # Offset sambungan di atas level (mm)
-COL_MIN_DIST_TO_LEVEL_MM = 2000 # Jarak minimum splice ke level terdekat (mm)
+COL_FAB_MAX_LENGTH_MM       = 12000   # Panjang maks kolom fabrikasi (mm)
+COL_SPLICE_OFFSET_MM        = 1500    # Offset sambungan di atas level (mm)
+COL_TOP_OFFSET_MM           = 500     # Offset di level teratas bangunan (mm)
+COL_MIN_DIST_TO_LEVEL_MM    = 2000 # Jarak minimum splice ke level terdekat (mm)
 
 # ============================================================
 
@@ -103,25 +104,25 @@ COL_RFA_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structur
 # ================= FLOOR LOAD INPUT =================
 
 # --- Input Parameters ---
-SLAB_THICKNESS = 150.0        # Tebal slab beton (mm)
-SLAB_ADD_THICKNESS = 30.0     # Tebal spesi/finishing (mm)
+SLAB_THICKNESS              = 150.0        # Tebal slab beton (mm)
+SLAB_ADD_THICKNESS          = 30.0         # Tebal spesi/finishing (mm)
 
 # --- Constants ---
-CONCRETE_UNIT_WEIGHT_kN_m3 = 24.0    # Berat jenis beton bertulang (kN/m³)
-MORTAR_WEIGHT_kg_m2_cm = 21.0        # Berat spesi per cm tebal (kg/m²/cm)
-GRAVITY_m_s2 = 9.81                   # Percepatan gravitasi (m/s²)
+CONCRETE_UNIT_WEIGHT_kN_m3  = 24.0         # Berat jenis beton bertulang (kN/m³)
+MORTAR_WEIGHT_kg_m2_cm      = 21.0         # Berat spesi per cm tebal (kg/m²/cm)
+GRAVITY_m_s2                = 9.81    # Percepatan gravitasi (m/s²)
 
 # --- Hitung Pressure ---
-slab_thickness_m = SLAB_THICKNESS / 1000.0
-SW_kN_m2 = slab_thickness_m * CONCRETE_UNIT_WEIGHT_kN_m3
-SLAB_SW_PRESSURE = round(SW_kN_m2 * 0.001, 5)  # MPa (N/mm²)
+slab_thickness_m            = SLAB_THICKNESS / 1000.0
+SW_kN_m2                    = slab_thickness_m * CONCRETE_UNIT_WEIGHT_kN_m3
+SLAB_SW_PRESSURE            = round(SW_kN_m2 * 0.001, 5)  # MPa (N/mm²)
 
-add_thickness_cm = SLAB_ADD_THICKNESS / 10.0
-ADL_kg_m2 = add_thickness_cm * MORTAR_WEIGHT_kg_m2_cm
-ADL_kN_m2 = ADL_kg_m2 * GRAVITY_m_s2 / 1000.0
-SLAB_ADL_PRESSURE = round(ADL_kN_m2 * 0.001, 5)  # MPa (N/mm²)
+add_thickness_cm            = SLAB_ADD_THICKNESS / 10.0
+ADL_kg_m2                   = add_thickness_cm * MORTAR_WEIGHT_kg_m2_cm
+ADL_kN_m2                   = ADL_kg_m2 * GRAVITY_m_s2 / 1000.0
+SLAB_ADL_PRESSURE           = round(ADL_kN_m2 * 0.001, 5)  # MPa (N/mm²)
 
-LIVE_LOAD_PRESSURE = 0.024  # MPa (24 kN/m²)
+LIVE_LOAD_PRESSURE          = 0.024  # MPa (24 kN/m²)
 
 # ================= LOAD PATTERNS (SAP2000-like) =================
 # Setiap pattern memiliki:
@@ -172,10 +173,10 @@ CUSTOM_LOAD_COMBOS = {
 
 
 # ================= SEISMIC PARAMETERS (SNI 1726) =================
-SITE_CLASS = "SC"         # Kelas situs: SA, SB, SC, SD, SE
-SS  = 1.0821               # Percepatan respons spektral MCE_R (T=0.2s)
-S1  = 0.4896               # Percepatan respons spektral MCE_R (T=1.0s)
-TL  = 20                  # Periode transisi panjang (detik)
+SITE_CLASS = "SC"        # Kelas situs: SA, SB, SC, SD, SE
+SS  = 1.0821             # Percepatan respons spektral MCE_R (T=0.2s)
+S1  = 0.4896             # Percepatan respons spektral MCE_R (T=1.0s)
+TL  = 20                 # Periode transisi panjang (detik)
 SDS = 0.87               # Parameter percepatan desain (short period)
 SD1 = 0.49               # Parameter percepatan desain (1-detik)
 
@@ -1941,7 +1942,9 @@ try:
             
             # Base offset: 0 untuk segmen pertama, SPLICE_OFFSET untuk segmen ke-2+
             base_offset_ft = offset_ft if seg_base_idx > 0 else 0.0
-            top_offset_ft = offset_ft  # Selalu ada offset di atas
+            # Top offset: COL_TOP_OFFSET_MM di level teratas, COL_SPLICE_OFFSET_MM di splice point
+            is_last_segment = (seg_top_idx == N_STORY)
+            top_offset_ft = mm_to_ft(COL_TOP_OFFSET_MM) if is_last_segment else offset_ft
             
             base_z = base_level.Elevation + base_offset_ft
             top_z  = top_level.Elevation + top_offset_ft
