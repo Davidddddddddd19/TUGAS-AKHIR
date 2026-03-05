@@ -803,6 +803,9 @@ def run_load_case(data, case_type, pattern_def=None):
     
     print(f"  Case {case_type}: FLOOR_PRESSURE = {FLOOR_PRESSURE:.6f} MPa, SW_MULT = {SELF_WEIGHT_MULT}")
 
+    # Fabrication splice offset (for column stationing)
+    _seismic_p = data.get('seismic_parameters', {})
+    splice_offset_mm = float(_seismic_p.get('COL_SPLICE_OFFSET_MM', 1500)) if _seismic_p else 1500.0
 
     try:
         def calculate_local_forces(F_global, local_axes):
@@ -1106,7 +1109,17 @@ def run_load_case(data, case_type, pattern_def=None):
             zero_v3 = find_zero_crossing(f_start, f_end, 'Fy', length_mm)
             if zero_v3: critical_stations.append(zero_v3)
             
-            # 4. Check Zero Crossings for Moment (Inflection Points)
+            # 4. Splice station for columns (fabrication) — output only, no model change
+            try:
+                if is_vertical and length_mm > splice_offset_mm:
+                    splice_ratio = splice_offset_mm / length_mm
+                    if 0.01 < splice_ratio < 0.99:  # Only if meaningful
+                        splice_forces = get_internal_forces_at_station(elem_id, splice_ratio, local_axes, is_vertical)
+                        critical_stations.append({"station": splice_ratio, "forces": splice_forces})
+            except:
+                pass  # Splice station is optional, don't break analysis
+            
+            # 5. Check Zero Crossings for Moment (Inflection Points)
             # Quadratic M(x) = Ax^2 + Bx + C = 0.
             # Using discrete check or samples is usually enough for display.
             # Analytic quadratic solving is possible but complex to integrate generic.
@@ -2099,6 +2112,7 @@ def run_seismic_analysis(data, direction='EQx'):
     n_stories = struct_config['n_stories']
     story_height_mm = struct_config['story_height']
     story_height_m = story_height_mm / 1000.0
+    splice_offset_mm = float(seismic_params.get('COL_SPLICE_OFFSET_MM', 1500))  # Fabrication splice offset
     n_span_x = struct_config['n_span_x']
     n_span_y = struct_config['n_span_y']
     span_x = struct_config['span_x']
