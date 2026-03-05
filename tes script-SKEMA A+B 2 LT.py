@@ -48,6 +48,11 @@ SPAN_X_MM   = 4000
 SPAN_Y_MM   = 4000    
 HEIGHT_MM   = 4000     
 
+# Fabrication Constants
+COL_FAB_MAX_LENGTH_MM = 12000   # Panjang maks kolom fabrikasi (mm)
+COL_SPLICE_OFFSET_MM  = 1500    # Offset sambungan di atas level (mm)
+COL_MIN_DIST_TO_LEVEL_MM = 2000 # Jarak minimum splice ke level terdekat (mm)
+
 # ============================================================
 
 COLUMN_ROTATION_DEG = 0
@@ -1354,25 +1359,21 @@ def get_topology_ref(element, doc):
             
             if pt_xy:
                 # Ambil Level Bawah & Atas untuk Z
+                # PENTING: Untuk analisis OpenSees, gunakan elevasi level TANPA offset fabrikasi
+                # Offset hanya untuk model fisik Revit, bukan model analitis
                 z_s, z_e = 0.0, 0.0
                 
-                # Base Level
+                # Base Level (tanpa offset — analisis menggunakan level murni)
                 p_base = element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM)
-                p_base_off = element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM)
                 if p_base:
                     lvl = doc.GetElement(p_base.AsElementId())
                     if lvl: z_s = lvl.Elevation
-                if p_base_off and p_base_off.HasValue:
-                    z_s += p_base_off.AsDouble()
 
-                # Top Level
+                # Top Level (tanpa offset — analisis menggunakan level murni)
                 p_top = element.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM)
-                p_top_off = element.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM)
                 if p_top:
                     lvl = doc.GetElement(p_top.AsElementId())
                     if lvl: z_e = lvl.Elevation
-                if p_top_off and p_top_off.HasValue:
-                    z_e += p_top_off.AsDouble()
 
                 # Set Topology (Z diambil dari level, XY dari location point)
                 topo["start_node"] = [to_int_mm(pt_xy.X), to_int_mm(pt_xy.Y), to_int_mm(z_s)]
@@ -1659,6 +1660,7 @@ def get_element_data(element, doc):
 # MAIN EXECUTION (TRANSACTION)
 # ===================================================
 cols_to_process, created_ids = [], []
+_FAB_COL_MAP = {}  # Mapping: revit_element_id -> (fab_base_idx, fab_top_idx)
 
 # === PRE-TRANSACTION: Overwrite Lookup Tables ===
 print("\n🔧 Preparing Custom Sections...")
@@ -1883,18 +1885,73 @@ try:
             y = start_y + (j * span_y_ft)
             return XYZ(x, y, elev)
 
-        for k in range(N_STORY):
-            lb, lt = active_levels[k], active_levels[k+1]
-            z_top = lt.Elevation
+        # --- FABRICATION SEGMENTATION LOGIC ---
+        # Kolom dibuat MENERUS per segmen fabrikasi di Revit (model fisik)
+        # Untuk analisis OpenSees: data di-split ke per-story saat JSON export
+        total_height_mm = N_STORY * HEIGHT_MM
+        effective_max = COL_FAB_MAX_LENGTH_MM - COL_SPLICE_OFFSET_MM  # 10500mm default
+        offset_ft = mm_to_ft(COL_SPLICE_OFFSET_MM)
+        
+        level_elevations_mm = [k * HEIGHT_MM for k in range(N_STORY + 1)]
+        
+        # Tentukan segmen fabrikasi: [(base_level_idx, top_level_idx)]
+        fab_segments = []
+        
+        if total_height_mm <= effective_max:
+            # Single piece: 1 kolom menerus dari Level 1 ke Level teratas + offset
+            fab_segments = [(0, N_STORY)]
+            print("  Fabrication: Single piece (total {:.0f}mm <= {:.0f}mm)".format(total_height_mm, effective_max))
+        else:
+            # Multi-segment: potong di level + offset (Opsi A)
+            seg_start = 0
+            for k in range(1, N_STORY + 1):
+                base_elev = level_elevations_mm[seg_start]
+                if seg_start > 0:
+                    base_elev += COL_SPLICE_OFFSET_MM
+                top_splice = level_elevations_mm[k] + COL_SPLICE_OFFSET_MM
+                seg_length = top_splice - base_elev
+                
+                if seg_length >= COL_FAB_MAX_LENGTH_MM:
+                    if k - 1 > seg_start:
+                        fab_segments.append((seg_start, k - 1))
+                        seg_start = k - 1
+                    else:
+                        story_physical = HEIGHT_MM + COL_SPLICE_OFFSET_MM
+                        if story_physical > COL_FAB_MAX_LENGTH_MM:
+                            print("  Warning: Story {} exceed fabrication limit".format(k))
+                
+                if k == N_STORY:
+                    fab_segments.append((seg_start, k))
             
-            # A. Create Columns (Grid Nodes)
+            print("  Fabrication: {} segments".format(len(fab_segments)))
+            for idx, (sb, st) in enumerate(fab_segments):
+                base_e = level_elevations_mm[sb] + (COL_SPLICE_OFFSET_MM if sb > 0 else 0)
+                top_e = level_elevations_mm[st] + COL_SPLICE_OFFSET_MM
+                print("    Seg {}: Level {} -> Level {} + offset ({:.0f}mm -> {:.0f}mm)".format(
+                    idx + 1, sb + 1, st + 1, base_e, top_e))
+        
+        # Simpan fab_segments sebagai global untuk dipakai saat JSON export
+        _FAB_SEGMENTS = fab_segments
+        _FAB_COL_MAP = {}  # Mapping: revit_element_id -> (fab_base_idx, fab_top_idx)
+        
+        # --- CREATE COLUMNS PER FABRICATION SEGMENT (menerus) ---
+        for seg_base_idx, seg_top_idx in fab_segments:
+            base_level = active_levels[seg_base_idx]
+            top_level  = active_levels[seg_top_idx]
+            
+            # Base offset: 0 untuk segmen pertama, SPLICE_OFFSET untuk segmen ke-2+
+            base_offset_ft = offset_ft if seg_base_idx > 0 else 0.0
+            top_offset_ft = offset_ft  # Selalu ada offset di atas
+            
+            base_z = base_level.Elevation + base_offset_ft
+            top_z  = top_level.Elevation + top_offset_ft
+            
             for i in range(BAY_X_COUNT + 1):
                 for j in range(BAY_Y_COUNT + 1):
-                    # Titik Bawah dan Atas Kolom (Sekarang sudah centered)
-                    p1 = get_pt(i, j, lb.Elevation)
-                    p2 = get_pt(i, j, lt.Elevation)
+                    p1 = get_pt(i, j, base_z)
+                    p2 = get_pt(i, j, top_z)
                     
-                    c = doc.Create.NewFamilyInstance(Line.CreateBound(p1, p2), col_sym, lb, StructuralType.Column)
+                    c = doc.Create.NewFamilyInstance(Line.CreateBound(p1, p2), col_sym, base_level, StructuralType.Column)
                     
                     # Assign material to column
                     if mat_col:
@@ -1904,23 +1961,34 @@ try:
                                 p_mat.Set(mat_col.Id)
                         except: pass
                     
-                    # PHYSICAL ROTATION: Apply default 90° rotation to physical element only
-                    # This does NOT change analytical local axes
+                    # PHYSICAL ROTATION
                     physical_rotation_rad = math.radians(90+COLUMN_ROTATION_DEG)
                     
-                    if abs(physical_rotation_rad) > 0.001:  # Only rotate if angle is non-zero
+                    if abs(physical_rotation_rad) > 0.001:
                         try:
-                            # Create vertical axis for column rotation
                             axis_end = XYZ(p1.X, p1.Y, p1.Z + 10)
                             axis = Line.CreateBound(p1, axis_end)
                             ElementTransformUtils.RotateElement(doc, c.Id, axis, physical_rotation_rad)
                         except Exception as e:
                             print("Column physical rotation warning: " + str(e))
                     
-                    cols_to_process.append({'el':c, 'lb':lb, 'lt':lt})
+                    cols_to_process.append({
+                        'el': c,
+                        'lb': base_level,
+                        'lt': top_level,
+                        'base_offset_ft': base_offset_ft,
+                        'top_offset_ft': top_offset_ft
+                    })
                     created_ids.append(c.Id)
                     _ELEMENT_GROUPS[c.Id.IntegerValue] = "Column"
-
+                    # Simpan metadata fabrikasi untuk split saat JSON export
+                    _FAB_COL_MAP[c.Id.IntegerValue] = (seg_base_idx, seg_top_idx)
+        
+        # --- CREATE BEAMS PER STORY (tidak berubah) ---
+        for k in range(N_STORY):
+            lt = active_levels[k+1]
+            z_top = lt.Elevation
+            
             # B. Create Beams (with Exterior/Interior detection)
             def mk_bm(p_start, p_end, sym, mat, group_name):
                 b = doc.Create.NewFamilyInstance(Line.CreateBound(p_start, p_end), sym, lt, StructuralType.Beam)
@@ -1971,6 +2039,7 @@ try:
                     p_start = get_pt(i, j, z_top)
                     p_end   = get_pt(i, j+1, z_top)
                     created_ids.append(mk_bm(p_start, p_end, sym, mat, grp))
+        
         # 4. FIX CONSTRAINTS
         doc.Regenerate()
         for x in cols_to_process:
@@ -1978,9 +2047,64 @@ try:
                 x['el'].get_Parameter(BuiltInParameter.SLANTED_COLUMN_TYPE_PARAM).Set(0)
                 x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM).Set(x['lb'].Id)
                 x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM).Set(x['lt'].Id)
-                x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM).Set(0.0)
-                x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM).Set(0.0)
+                x['el'].get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM).Set(x['base_offset_ft'])
+                x['el'].get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM).Set(x['top_offset_ft'])
             except: pass
+        
+        # 5. FIX ANALYTICAL MODEL — Reset ke level murni (tanpa offset fabrikasi)
+        # Model fisik: kolom dengan offset → model analitis: kolom di level murni
+        doc.Regenerate()
+        analytical_adjusted = 0
+        for x in cols_to_process:
+            base_off = x.get('base_offset_ft', 0.0)
+            top_off = x.get('top_offset_ft', 0.0)
+            
+            # Hanya adjust kolom yang memiliki offset
+            if abs(base_off) < 0.001 and abs(top_off) < 0.001:
+                continue
+            
+            try:
+                col_el = x['el']
+                analytical_model = col_el.GetAnalyticalModel()
+                
+                if analytical_model is not None:
+                    curves = analytical_model.GetCurves(AnalyticalCurveType.ActiveCurves)
+                    
+                    if curves and len(curves) > 0:
+                        for curve in curves:
+                            start_pt = curve.GetEndPoint(0)
+                            end_pt = curve.GetEndPoint(1)
+                            
+                            # Endpoint analytical = level murni (tanpa offset)
+                            # start_pt.Z saat ini = base_level + base_offset
+                            # end_pt.Z saat ini   = top_level + top_offset
+                            # Target: Z = level elevation tanpa offset
+                            new_start = XYZ(start_pt.X, start_pt.Y, start_pt.Z - base_off)
+                            new_end   = XYZ(end_pt.X,   end_pt.Y,   end_pt.Z - top_off)
+                            
+                            new_curve = Line.CreateBound(new_start, new_end)
+                            analytical_model.SetCurve(new_curve)
+                            analytical_adjusted += 1
+            except Exception as e_anal:
+                # Fallback: coba method alternatif untuk Revit 2023+
+                try:
+                    col_el = x['el']
+                    # Revit 2023+: AnalyticalToPhysicalAssociationManager
+                    # Jika GetAnalyticalModel() tidak tersedia, coba adjust via parameter
+                    # ANALYTICAL_MODEL_BASE_OFFSET dan ANALYTICAL_MODEL_TOP_OFFSET 
+                    p_anal_base = col_el.get_Parameter(BuiltInParameter.STRUCTURAL_ANALYTICAL_COLUMN_BASE_EXTENSION)
+                    p_anal_top = col_el.get_Parameter(BuiltInParameter.STRUCTURAL_ANALYTICAL_COLUMN_TOP_EXTENSION)
+                    
+                    if p_anal_base and not p_anal_base.IsReadOnly:
+                        p_anal_base.Set(-base_off)  # Negatif untuk menarik balik ke level
+                    if p_anal_top and not p_anal_top.IsReadOnly:
+                        p_anal_top.Set(-top_off)
+                    analytical_adjusted += 1
+                except:
+                    pass
+        
+        if analytical_adjusted > 0:
+            print("  Analytical model adjusted: {} columns reset to level-pure".format(analytical_adjusted))
 
 except Exception as e:
     TaskDialog.Show("Error", str(e))
@@ -1995,11 +2119,55 @@ from System.Collections.Generic import List
 
 # --- FUNGSI BANTUAN GEOMETRI ---
 def get_element_curve(element):
-    """Mendapatkan garis sumbu dari elemen (Balok/Kolom)."""
+    """Mendapatkan garis sumbu dari elemen (Balok/Kolom).
+    Untuk kolom: gunakan elevasi level murni (tanpa offset fabrikasi)."""
     loc = element.Location
     if isinstance(loc, LocationCurve):
-        return loc.Curve
+        # Balok: gunakan kurva fisik langsung
+        cat_id = element.Category.Id.IntegerValue if element.Category else -1
+        if cat_id == int(BuiltInCategory.OST_StructuralColumns):
+            # Kolom dengan LocationCurve: adjust ke level murni
+            curve = loc.Curve
+            p0 = curve.GetEndPoint(0)
+            p1_end = curve.GetEndPoint(1)
+            
+            # Ambil level elevasi tanpa offset
+            p_base = element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM)
+            p_top = element.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM)
+            z_s = p0.Z  # default
+            z_e = p1_end.Z  # default
+            
+            if p_base:
+                lvl = doc.GetElement(p_base.AsElementId())
+                if lvl: z_s = lvl.Elevation
+            if p_top:
+                lvl = doc.GetElement(p_top.AsElementId())
+                if lvl: z_e = lvl.Elevation
+            
+            pt_start = XYZ(p0.X, p0.Y, z_s)
+            pt_end = XYZ(p0.X, p0.Y, z_e)
+            if pt_start.DistanceTo(pt_end) > 0.01:
+                return Line.CreateBound(pt_start, pt_end)
+            return curve
+        return loc.Curve  # Balok: return kurva fisik langsung
     elif isinstance(loc, LocationPoint): # Kolom Vertikal
+        pt = loc.Point
+        # Gunakan level elevasi tanpa offset (bukan bounding box)
+        p_base = element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM)
+        p_top = element.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM)
+        z_s, z_e = 0.0, 0.0
+        
+        if p_base:
+            lvl = __revit__.ActiveUIDocument.Document.GetElement(p_base.AsElementId())
+            if lvl: z_s = lvl.Elevation
+        if p_top:
+            lvl = __revit__.ActiveUIDocument.Document.GetElement(p_top.AsElementId())
+            if lvl: z_e = lvl.Elevation
+        
+        if abs(z_e - z_s) > 0.01:
+            return Line.CreateBound(XYZ(pt.X, pt.Y, z_s), XYZ(pt.X, pt.Y, z_e))
+        
+        # Fallback ke bounding box
         bbox = element.get_BoundingBox(None)
         if bbox:
             center_x = (bbox.Min.X + bbox.Max.X) / 2.0
@@ -2335,16 +2503,71 @@ try:
     # --- C. LOOPING & GENERATE ELEMENT DATA ---
     final_elements_list = []
     
+    # Level elevations in mm for per-story splitting
+    _level_elevs_mm = [k * int(HEIGHT_MM) for k in range(int(N_STORY) + 1)]
+    
     print("Memproses Ekspor JSON...")
     
     for el in elements_all:
         try:
-            # Panggil fungsi get_element_data yang sudah Anda definisikan.
-            # Fungsi ini akan memanggil calculate_beam_distributed_load yang BARU (tanpa pressure_MPa)
             el_data = get_element_data(el, doc)
             
             if el_data and el_data.get("id"):
-                final_elements_list.append(el_data)
+                el_id = el.Id.IntegerValue
+                fab_info = _FAB_COL_MAP.get(el_id)
+                
+                if fab_info and el_data["type"] == "Column":
+                    seg_base_idx, seg_top_idx = fab_info
+                    n_stories_in_seg = seg_top_idx - seg_base_idx
+                    
+                    if n_stories_in_seg > 1:
+                        # SPLIT: kolom menerus -> per-story virtual elements
+                        topo = el_data["topology"]
+                        x_coord = topo["start_node"][0]
+                        y_coord = topo["start_node"][1]
+                        
+                        for k_story in range(seg_base_idx, seg_top_idx):
+                            import copy
+                            story_data = copy.deepcopy(el_data)
+                            
+                            # Unique ID untuk setiap virtual element
+                            story_data["id"] = el_id * 1000 + (k_story - seg_base_idx + 1)
+                            
+                            # Topology per-story (level murni tanpa offset)
+                            z_base = _level_elevs_mm[k_story]
+                            z_top = _level_elevs_mm[k_story + 1]
+                            story_data["topology"] = {
+                                "start_node": [x_coord, y_coord, z_base],
+                                "end_node": [x_coord, y_coord, z_top],
+                                "length_mm": z_top - z_base
+                            }
+                            
+                            # Update design parameters for this story height
+                            story_data["design_parameters"] = get_design_parameters(
+                                "Column", story_data["topology"])
+                            
+                            final_elements_list.append(story_data)
+                        
+                        print("  Column {} split: {} stories (Level {}->{})".format(
+                            el_id, n_stories_in_seg, seg_base_idx + 1, seg_top_idx + 1))
+                    else:
+                        # Single story segment: topology per-story langsung
+                        topo = el_data["topology"]
+                        x_coord = topo["start_node"][0]
+                        y_coord = topo["start_node"][1]
+                        z_base = _level_elevs_mm[seg_base_idx]
+                        z_top = _level_elevs_mm[seg_top_idx]
+                        el_data["topology"] = {
+                            "start_node": [x_coord, y_coord, z_base],
+                            "end_node": [x_coord, y_coord, z_top],
+                            "length_mm": z_top - z_base
+                        }
+                        el_data["design_parameters"] = get_design_parameters(
+                            "Column", el_data["topology"])
+                        final_elements_list.append(el_data)
+                else:
+                    # Beam atau kolom tanpa fab info: langsung append
+                    final_elements_list.append(el_data)
                 
         except Exception as e_item:
             print("Skip Element ID {}: {}".format(el.Id, str(e_item)))
@@ -2376,6 +2599,7 @@ try:
             "TOTAL_HEIGHT_M": TOTAL_HEIGHT_M,
             "Ie": Ie, "R": R, "Cd": Cd,
             "N_STORY": N_STORY, "HEIGHT_MM": HEIGHT_MM,
+            "COL_SPLICE_OFFSET_MM": COL_SPLICE_OFFSET_MM,
         },
         
         "unit_system": "Revit Converted (mm, N, MPa)",
