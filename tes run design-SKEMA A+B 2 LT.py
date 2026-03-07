@@ -167,6 +167,27 @@ def display_results():
         info.get('code', 'N/A'), info.get('method', 'N/A'),
         info.get('framing_type', 'N/A')))
 
+    # --- Design parameters info ---
+    dcr_limit = info.get('dcr_limit', 1.0)
+    Ry_val = info.get('Ry', 1.0)
+    rho_val = info.get('rho', 1.0)
+    tau_b_val = info.get('tau_b', 1.0)
+    framing = info.get('framing_type', 'N/A')
+
+    out.print_md("**DCR Limit:** {} | **Ry:** {} | **rho:** {} | **tau_b:** {}".format(
+        dcr_limit, Ry_val, rho_val, tau_b_val))
+
+    # SMF-specific: show Lb/ry limit using material from first element
+    if framing in ["SRPMK/SMF", "SMF"] and elements:
+        # Get Fy and E from first element's material for display
+        first_elem = elements[0]
+        cap = first_elem.get("capacity", {})
+        smf = first_elem.get("smf_checks", {})
+        Lb_ry_lim = smf.get("Lb_ry_limit", 0)
+        if Lb_ry_lim > 0:
+            out.print_md("> **AISC 341-22 D1.2b:** Lb/ry &le; 0.086&middot;E/(Ry&middot;Fy) = **{:.1f}**".format(
+                Lb_ry_lim))
+
     max_dcr = summary.get("max_DCR", {})
     summary_data = [
         ["Total Elements", str(summary.get('total_elements', 0))],
