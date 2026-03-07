@@ -2704,6 +2704,134 @@ def run_seismic_analysis(data, direction='EQx'):
                     }
                 except:
                     pass
+        
+        # ================================================================
+        # J. DRIFT & P-DELTA CHECK (SNI 1726-2019 ps.7.8.6 & 7.8.7)
+        # ================================================================
+        # δx = Cd · δxe / Ie                    (Persamaan 44)
+        # Δi = δi - δ(i-1)                      (Gambar 10)
+        # θ = Px · Δ · Ie / (Vx · hsx · Cd)    (Persamaan 45)
+        # θmax = 0.5 / (β · Cd) ≤ 0.25         (Persamaan 46)
+        
+        # Determine which displacement component to use
+        disp_idx = 0 if direction == 'EQx' else 1  # U1 (X) or U2 (Y)
+        
+        # Compute average elastic displacement per floor level
+        # Only use ORIGINAL joint nodes (exclude offset/sub-element nodes)
+        floor_disp_elastic = {}  # {z_level: [list of disps]}
+        
+        for nid, ndata in res["nodes"].items():
+            if nid in fixed_nodes:
+                continue
+            coords = ndata.get("coords", [0, 0, 0])
+            disp = ndata.get("disp", [0.0]*6)
+            z = coords[2]
+            
+            # Only consider original structural joint nodes
+            if nid not in original_joint_nids:
+                continue
+            
+            if z not in floor_disp_elastic:
+                floor_disp_elastic[z] = []
+            floor_disp_elastic[z].append(disp[disp_idx])
+        
+        # Sort floor levels
+        sorted_floors = sorted(floor_disp_elastic.keys())
+        
+        # β = ratio shear demand/capacity (konservatif = 1.0)
+        beta = 1.0
+        theta_max = min(0.5 / (beta * Cd), 0.25)
+        
+        drift_results = []
+        prev_delta_x = 0.0  # Base displacement = 0
+        
+        # Cumulative shear per floor (story shear = sum of Fx above)
+        # Vx_i = sum(Fx_j for j >= i)
+        Vx_story_kN = [0.0] * n_stories
+        for i in range(n_stories - 1, -1, -1):
+            Vx_story_kN[i] = Fx_kN[i] + (Vx_story_kN[i + 1] if i + 1 < n_stories else 0.0)
+        
+        # Cumulative vertical load per floor (Px = total weight above floor x)
+        Px_kN = [0.0] * n_stories
+        for i in range(n_stories - 1, -1, -1):
+            Px_kN[i] = Wi_kN[i] + (Px_kN[i + 1] if i + 1 < n_stories else 0.0)
+        
+        for fi in range(n_stories):
+            if fi < len(sorted_floors):
+                z_level = sorted_floors[fi]
+                disps_at_floor = floor_disp_elastic.get(z_level, [0.0])
+                # Average elastic displacement (δxe)
+                delta_xe = sum(disps_at_floor) / len(disps_at_floor)
+            else:
+                delta_xe = 0.0
+            
+            # Amplified displacement: δx = Cd · δxe / Ie (ps.44)
+            delta_x = Cd * abs(delta_xe) / Ie
+            
+            # Story drift: Δi = δi - δ(i-1) (Gambar 10)
+            delta_i = delta_x - prev_delta_x
+            
+            # Story height
+            hsx_mm = story_height_mm
+            
+            # Drift limit: Δa = 0.025·hsx (Tabel 20, Kategori Risiko I/II)
+            delta_a = 0.025 * hsx_mm
+            
+            # Stability coefficient θ (ps.45)
+            Vx_N = Vx_story_kN[fi] * 1000.0  # kN → N
+            if Vx_N > 0 and hsx_mm > 0:
+                theta = (Px_kN[fi] * 1000.0 * delta_i * Ie) / (Vx_N * hsx_mm * Cd)
+            else:
+                theta = 0.0
+            
+            # Status
+            drift_ok = delta_i <= delta_a
+            if theta <= 0.10:
+                pdelta_status = "OK (negligible)"
+                amplification = 1.0
+            elif theta <= theta_max:
+                pdelta_status = "Amplify 1/(1-theta)"
+                amplification = 1.0 / (1.0 - theta)
+            else:
+                pdelta_status = "NG - REDESIGN"
+                amplification = None
+            
+            drift_results.append({
+                "floor": fi + 1,
+                "delta_xe_mm": round(abs(delta_xe), 4),
+                "delta_x_mm": round(delta_x, 4),
+                "delta_i_mm": round(delta_i, 4),
+                "delta_a_mm": round(delta_a, 1),
+                "drift_ratio": round(delta_i / delta_a, 4) if delta_a > 0 else 0.0,
+                "drift_ok": drift_ok,
+                "Px_kN": round(Px_kN[fi], 2),
+                "Vx_kN": round(Vx_story_kN[fi], 2),
+                "theta": round(theta, 6),
+                "theta_max": round(theta_max, 4),
+                "pdelta_status": pdelta_status,
+                "amplification": round(amplification, 4) if amplification else None
+            })
+            
+            prev_delta_x = delta_x
+        
+        res["drift_pdelta"] = drift_results
+        res["drift_pdelta_summary"] = {
+            "theta_max": round(theta_max, 4),
+            "beta": beta,
+            "Cd": Cd,
+            "direction": direction,
+            "all_drift_ok": all(d["drift_ok"] for d in drift_results),
+            "all_stability_ok": all(d["theta"] <= theta_max for d in drift_results),
+        }
+        
+        # Print drift table
+        print(f"\n  --- Drift & P-Delta ({direction}) ---")
+        print(f"  {'Fl':>3} {'dxe(mm)':>10} {'dx(mm)':>10} {'Di(mm)':>10} {'Da(mm)':>10} {'Di/Da':>8} {'theta':>10} {'Status'}")
+        print(f"  {'-'*3} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*8} {'-'*10} {'-'*20}")
+        for d in drift_results:
+            print(f"  {d['floor']:>3} {d['delta_xe_mm']:>10.4f} {d['delta_x_mm']:>10.4f} "
+                  f"{d['delta_i_mm']:>10.4f} {d['delta_a_mm']:>10.1f} {d['drift_ratio']:>8.4f} "
+                  f"{d['theta']:>10.6f} {d['pdelta_status']}")
     
     except Exception as e:
         import traceback
