@@ -186,8 +186,63 @@ x_Ta = 0.8                # Eksponen (baja MRF)
 
 # --- Parameter Desain Seismik ---
 Ie = 1.0                  # Faktor keutamaan gempa
-R  = 8.0                  # Koefisien modifikasi respons (SRPMK)
-Cd = 5.5                  # Faktor amplifikasi defleksi (SRPMK)
+R  = 3.5                  # Koefisien modifikasi respons (SRPMB/OMF, SNI Tabel 12 C.4)
+Cd = 3.0                  # Faktor pembesaran defleksi (SRPMB/OMF, SNI Tabel 12 C.4)
+Omega_0 = 3.0             # Faktor kuat lebih sistem (SRPMB/OMF, SNI Tabel 12 C.4)
+FRAME_TYPE = "SRPMB/OMF"  # Sistem rangka pemikul momen biasa
+RISK_CATEGORY = "II"      # Kategori risiko bangunan (I, II, III, IV)
+
+# --- SDC Compatibility Check ---
+def get_sdc(SDS_val, SD1_val, risk_cat):
+    """
+    Tentukan Kategori Desain Seismik (SDC) per SNI 1726 Tabel 8 & 9.
+    Return: SDC string ("A", "B", "C", "D", "E", "F")
+    """
+    is_cat_IV = (risk_cat == "IV")
+    # Tabel 8 - berdasarkan SDS
+    if SDS_val < 0.167:
+        sdc_sds = "A"
+    elif SDS_val < 0.33:
+        sdc_sds = "C" if is_cat_IV else "B"
+    elif SDS_val < 0.50:
+        sdc_sds = "D" if is_cat_IV else "C"
+    else:
+        sdc_sds = "D"
+    # Tabel 9 - berdasarkan SD1
+    if SD1_val < 0.067:
+        sdc_sd1 = "A"
+    elif SD1_val < 0.133:
+        sdc_sd1 = "C" if is_cat_IV else "B"
+    elif SD1_val < 0.20:
+        sdc_sd1 = "D" if is_cat_IV else "C"
+    else:
+        sdc_sd1 = "D"
+    # Governing = yang lebih berat
+    order = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "F": 5}
+    return sdc_sds if order.get(sdc_sds, 0) >= order.get(sdc_sd1, 0) else sdc_sd1
+
+def check_sdc_compatibility(sdc, frame_type):
+    """
+    Cek kompatibilitas sistem rangka dengan SDC.
+    OMF: Tanpa batasan untuk SDC A, B, C.
+    SDC D, E: Ada batasan (SNI 7.2.5.6).
+    SDC F: Tidak diizinkan.
+    Return: (is_compatible, message)
+    """
+    if frame_type in ["SRPMB/OMF", "OMF"]:
+        if sdc in ["A", "B", "C"]:
+            return (True, "OK - SRPMB/OMF sesuai untuk SDC {}".format(sdc))
+        elif sdc in ["D", "E"]:
+            return (False,
+                "DISCLAIMER: Sistem SRPMB/OMF tidak sesuai untuk SDC {}. "
+                "Ketentuan SNI 7.2.5.6 harus dipenuhi. "
+                "Analisis tetap dijalankan untuk referensi.".format(sdc))
+        else:  # F
+            return (False,
+                "DISCLAIMER: SRPMB/OMF tidak diizinkan untuk SDC {}. "
+                "Analisis tetap dijalankan untuk referensi.".format(sdc))
+    return (True, "OK")
+
 
 # ================= SEISMIC HELPER FUNCTIONS =================
 VALID_SITE_CLASSES = ["SA", "SB", "SC", "SD", "SE"]
@@ -248,6 +303,14 @@ T0 = 0.2 * (SD1 / SDS)
 Ts_period = SD1 / SDS
 TOTAL_HEIGHT_M = N_STORY * HEIGHT_MM / 1000.0
 Ta = Ct * (TOTAL_HEIGHT_M ** x_Ta)
+
+# --- SDC check ---
+SDC = get_sdc(SDS, SD1, RISK_CATEGORY)
+SDC_IS_COMPATIBLE, SDC_MESSAGE = check_sdc_compatibility(SDC, FRAME_TYPE)
+if not SDC_IS_COMPATIBLE:
+    print("=" * 60)
+    print("  {}".format(SDC_MESSAGE))
+    print("=" * 60)
 
 # ===================================================
 # FAMILY RELOAD (load sections dari .txt ke Revit)
@@ -1480,125 +1543,40 @@ def get_local_axes(element, doc):
     return local_axes
 
 # ===================================================
-# AISC 360-22 DESIGN PARAMETERS (SRPMK)
+# AISC 360-22 DESIGN PARAMETERS (SRPMB/OMF)
+# Section classification dihitung di Steel Design Engine.
 # ===================================================
-
-def calculate_section_classification(section_props, material_props):
-    """
-    Calculate section slenderness (λ) and classify per AISC 360-22 Table B4.1b.
-    For SRPMK: Uses λhd (highly ductile) limits per AISC 341-22.
-    
-    Args:
-        section_props: Dictionary from get_section_properties()
-        material_props: Dictionary from get_material_data()
-    
-    Returns:
-        Dictionary with λ values and classification
-    """
-    # Extract values from existing section properties
-    d = section_props.get("d_mm", 0)
-    b = section_props.get("b_mm", 0)
-    tf = section_props.get("tf_mm", 0)
-    tw = section_props.get("tw_mm", 0)
-    Fy = material_props.get("Fy_MPa", 0)
-    E = material_props.get("E_MPa", 0)
-    
-    # Safety check
-    if tf <= 0 or tw <= 0 or Fy <= 0 or E <= 0:
-        return {
-            "lambda_flange": 0, "lambda_web": 0,
-            "lambda_p_flange": 0, "lambda_r_flange": 0, "lambda_hd_flange": 0,
-            "lambda_p_web": 0, "lambda_r_web": 0, "lambda_hd_web": 0,
-            "flange_class": "unknown", "web_class": "unknown",
-            "srpmk_flange_ok": False, "srpmk_web_ok": False
-        }
-    
-    # Calculate slenderness ratios
-    lambda_flange = (b / 2.0) / tf   # b/(2*tf) for I-section flanges (half-flange width)
-    h_web = d - 2.0 * tf             # Clear web height
-    lambda_web = h_web / tw          # h/tw for webs
-    
-    # AISC 360-22 Table B4.1b limits (flexure) - Case 10 for flanges, Case 15 for webs
-    # λp = compact limit, λr = noncompact limit
-    lambda_p_flange = 0.38 * math.sqrt(E / Fy)   # Compact flange (Case 10)
-    lambda_r_flange = 1.0 * math.sqrt(E / Fy)    # Noncompact flange limit
-    
-    lambda_p_web = 3.76 * math.sqrt(E / Fy)      # Compact web (Case 15)
-    lambda_r_web = 5.70 * math.sqrt(E / Fy)      # Noncompact web limit
-    
-    # AISC 341-22 Table D1.1 - Highly Ductile Members (SRPMK requirement)
-    lambda_hd_flange = 0.30 * math.sqrt(E / Fy)  # Highly ductile flange
-    lambda_hd_web = 2.45 * math.sqrt(E / Fy)     # Highly ductile web (Ca assumed ≈ 0)
-    
-    # Classify per AISC 360-22
-    if lambda_flange <= lambda_p_flange:
-        flange_class = "compact"
-    elif lambda_flange <= lambda_r_flange:
-        flange_class = "noncompact"
-    else:
-        flange_class = "slender"
-    
-    if lambda_web <= lambda_p_web:
-        web_class = "compact"
-    elif lambda_web <= lambda_r_web:
-        web_class = "noncompact"
-    else:
-        web_class = "slender"
-    
-    # SRPMK (Highly Ductile) check per AISC 341-22
-    flange_srpmk_ok = lambda_flange <= lambda_hd_flange
-    web_srpmk_ok = lambda_web <= lambda_hd_web
-    
-    return {
-        "lambda_flange": round(lambda_flange, 2),
-        "lambda_web": round(lambda_web, 2),
-        "lambda_p_flange": round(lambda_p_flange, 2),
-        "lambda_r_flange": round(lambda_r_flange, 2),
-        "lambda_hd_flange": round(lambda_hd_flange, 2),
-        "lambda_p_web": round(lambda_p_web, 2),
-        "lambda_r_web": round(lambda_r_web, 2),
-        "lambda_hd_web": round(lambda_hd_web, 2),
-        "flange_class": flange_class,
-        "web_class": web_class,
-        "srpmk_flange_ok": flange_srpmk_ok,
-        "srpmk_web_ok": web_srpmk_ok
-    }
 
 
 def get_design_parameters(element_type, topology):
     """
     Generate design parameters for AISC 360-22 checks.
-    SRPMK Fixed-Fixed assumptions: K=0.65 (theoretical 0.5, practical 0.65).
+    SRPMB/OMF: K dihitung di Engine via nomogram (sidesway uninhibited).
+    Cb dihitung di Engine per load combination.
     
     Args:
         element_type: "Column" or "Beam"
         topology: Dictionary from get_topology_ref()
     
     Returns:
-        Dictionary with K factors, unbraced lengths, Cb
+        Dictionary with unbraced lengths dan metadata.
+        K factor dihitung di Engine menggunakan nomogram.
     """
     length_mm = topology.get("length_mm", 0)
     
-    # SRPMK Fixed-Fixed assumption (moment frame with rigid connections)
-    # Theoretical K=0.5, practical K=0.65 (accounts for imperfect fixity)
-    # For sidesway inhibited (braced) frames with fixed ends
-    Kx = 0.65  # Strong-axis (typically braced by diaphragm)
-    Ky = 0.65  # Weak-axis (fixed-fixed assumption)
-    
-    # Unbraced lengths - conservative (full member length)
-    # Can be refined based on lateral bracing points
+    # Unbraced lengths - konservatif (panjang penuh elemen)
+    # Bisa diperhalus berdasarkan titik bracing lateral
     Lx_mm = length_mm  # Strong-axis unbraced length
     Ly_mm = length_mm  # Weak-axis unbraced length
     Lb_mm = length_mm  # Lateral-torsional buckling length (beam)
     
     return {
-        "Kx": Kx,
-        "Ky": Ky,
         "Lx_mm": Lx_mm,
         "Ly_mm": Ly_mm,
         "Lb_mm": Lb_mm,
-        "Cb": 1.0,  # Conservative per user request
-        "frame_type": "SRPMK",
+        "Lcz_mm": Ly_mm,     # Torsional buckling length (konservatif = Ly)
+        "Kz": 1.0,          # Torsional K factor (default)
+        "frame_type": "SRPMB/OMF",
         "end_condition": "fixed-fixed"
     }
 
@@ -1637,11 +1615,9 @@ def get_element_data(element, doc):
         "topology": topology_data,
         "local_axes": get_local_axes(element, doc),
         
-        # NEW: AISC 360-22 Design Parameters (SRPMK)
-        "design_parameters": get_design_parameters(elem_type_str, topology_data),
-        
-        # NEW: Section Classification per AISC 360-22 & AISC 341-22
-        "section_classification": calculate_section_classification(section_props, material_props)
+        # AISC 360-22 Design Parameters (SRPMB/OMF)
+        # K factor dan Cb dihitung di Engine, section classification juga di Engine
+        "design_parameters": get_design_parameters(elem_type_str, topology_data)
     }
     
     # 5. Hitung Beban (Khusus Beam)
@@ -2600,7 +2576,11 @@ try:
             "T0": round(T0, 4), "Ts": round(Ts_period, 4),
             "Ct": Ct, "x_Ta": x_Ta, "Ta": round(Ta, 4),
             "TOTAL_HEIGHT_M": TOTAL_HEIGHT_M,
-            "Ie": Ie, "R": R, "Cd": Cd,
+            "Ie": Ie, "R": R, "Cd": Cd, "Omega_0": Omega_0,
+            "frame_type": FRAME_TYPE,
+            "SDC": SDC,
+            "sdc_compatible": SDC_IS_COMPATIBLE,
+            "sdc_message": SDC_MESSAGE,
             "N_STORY": N_STORY, "HEIGHT_MM": HEIGHT_MM,
             "COL_SPLICE_OFFSET_MM": COL_SPLICE_OFFSET_MM,
         },
