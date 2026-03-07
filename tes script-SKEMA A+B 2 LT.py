@@ -186,11 +186,38 @@ x_Ta = 0.8                # Eksponen (baja MRF)
 
 # --- Parameter Desain Seismik ---
 Ie = 1.0                  # Faktor keutamaan gempa
-R  = 3.5                  # Koefisien modifikasi respons (SRPMB/OMF, SNI Tabel 12 C.4)
-Cd = 3.0                  # Faktor pembesaran defleksi (SRPMB/OMF, SNI Tabel 12 C.4)
-Omega_0 = 3.0             # Faktor kuat lebih sistem (SRPMB/OMF, SNI Tabel 12 C.4)
-FRAME_TYPE = "SRPMB/OMF"  # Sistem rangka pemikul momen biasa
 RISK_CATEGORY = "II"      # Kategori risiko bangunan (I, II, III, IV)
+
+# --- Frame Type Configuration ---
+# User pilihan: "SRPMB/OMF" atau "SRPMK/SMF"
+FRAME_TYPE = "SRPMB/OMF"
+
+FRAME_CONFIG = {
+    "SRPMB/OMF": {
+        "R": 3.5, "Cd": 3.0, "Omega_0": 3.0,
+        "Ry": 1.0,   # Tidak diperlukan untuk OMF
+        "rho": 1.0,  # Redundancy factor (SNI 7.3.4)
+        "sdc_allowed": ["A", "B", "C"],
+        "sdc_disclaimer": ["D", "E"],
+        "sdc_prohibited": ["F"],
+    },
+    "SRPMK/SMF": {
+        "R": 8.0, "Cd": 5.5, "Omega_0": 3.0,
+        "Ry": 1.1,   # Hot-rolled shapes (AISC 341 Table A3.2)
+        "rho": 1.0,  # Redundancy factor (SNI 7.3.4)
+        "sdc_allowed": ["A", "B", "C", "D", "E", "F"],
+        "sdc_disclaimer": [],
+        "sdc_prohibited": [],
+    }
+}
+
+# Auto-assign parameters dari FRAME_CONFIG
+_cfg = FRAME_CONFIG[FRAME_TYPE]
+R  = _cfg["R"]            # Koefisien modifikasi respons
+Cd = _cfg["Cd"]           # Faktor pembesaran defleksi
+Omega_0 = _cfg["Omega_0"] # Faktor kuat lebih sistem
+Ry = _cfg["Ry"]           # Expected yield stress ratio
+rho = _cfg["rho"]         # Redundancy factor
 
 # --- SDC Compatibility Check ---
 def get_sdc(SDS_val, SD1_val, risk_cat):
@@ -223,24 +250,21 @@ def get_sdc(SDS_val, SD1_val, risk_cat):
 
 def check_sdc_compatibility(sdc, frame_type):
     """
-    Cek kompatibilitas sistem rangka dengan SDC.
-    OMF: Tanpa batasan untuk SDC A, B, C.
-    SDC D, E: Ada batasan (SNI 7.2.5.6).
-    SDC F: Tidak diizinkan.
+    Cek kompatibilitas sistem rangka dengan SDC menggunakan FRAME_CONFIG.
     Return: (is_compatible, message)
     """
-    if frame_type in ["SRPMB/OMF", "OMF"]:
-        if sdc in ["A", "B", "C"]:
-            return (True, "OK - SRPMB/OMF sesuai untuk SDC {}".format(sdc))
-        elif sdc in ["D", "E"]:
-            return (False,
-                "DISCLAIMER: Sistem SRPMB/OMF tidak sesuai untuk SDC {}. "
-                "Ketentuan SNI 7.2.5.6 harus dipenuhi. "
-                "Analisis tetap dijalankan untuk referensi.".format(sdc))
-        else:  # F
-            return (False,
-                "DISCLAIMER: SRPMB/OMF tidak diizinkan untuk SDC {}. "
-                "Analisis tetap dijalankan untuk referensi.".format(sdc))
+    cfg = FRAME_CONFIG.get(frame_type, {})
+    if sdc in cfg.get("sdc_allowed", []):
+        return (True, "OK - {} sesuai untuk SDC {}".format(frame_type, sdc))
+    elif sdc in cfg.get("sdc_disclaimer", []):
+        return (False,
+            "DISCLAIMER: Sistem {} tidak sesuai untuk SDC {}. "
+            "Ketentuan SNI 7.2.5.6 harus dipenuhi. "
+            "Analisis tetap dijalankan untuk referensi.".format(frame_type, sdc))
+    elif sdc in cfg.get("sdc_prohibited", []):
+        return (False,
+            "DISCLAIMER: {} tidak diizinkan untuk SDC {}. "
+            "Analisis tetap dijalankan untuk referensi.".format(frame_type, sdc))
     return (True, "OK")
 
 
@@ -2577,6 +2601,7 @@ try:
             "Ct": Ct, "x_Ta": x_Ta, "Ta": round(Ta, 4),
             "TOTAL_HEIGHT_M": TOTAL_HEIGHT_M,
             "Ie": Ie, "R": R, "Cd": Cd, "Omega_0": Omega_0,
+            "Ry": Ry, "rho": rho,
             "frame_type": FRAME_TYPE,
             "SDC": SDC,
             "sdc_compatible": SDC_IS_COMPATIBLE,
