@@ -145,6 +145,7 @@ class ElementDesignResult:
     shear_combo: str = ""
     shear_location_mm: float = 0.0
     station_details: Optional[list] = None  # Per-combo per-station results
+    smf_checks: Optional[Dict] = None      # SMF-specific checks (AISC 341)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -217,6 +218,51 @@ class SectionClassification:
             "lr_flange": lr_flange,
             "lp_web": lp_web,
             "lr_web": lr_web
+        }
+
+    def classify_seismic(self, frame_type: str, Ry: float = 1.0,
+                         Ca: float = 0.0) -> Dict:
+        """
+        AISC 341-22 Table D1.1b — Seismic ductility classification.
+        
+        SRPMK/SMF: Members harus memenuhi highly ductile limits (lambda_hd).
+        SRPMB/OMF: Tidak ada persyaratan seismik tambahan.
+        
+        Ca = Pr / (Fy * Ag), capped [0, 1]
+        """
+        if frame_type not in ["SRPMK/SMF", "SMF"]:
+            return {"seismic_class": "N/A", "ok": True,
+                    "message": "Tidak diperlukan untuk {}".format(frame_type)}
+        
+        E = self.E
+        Fy = self.Fy
+        RyFy = Ry * Fy
+        sqrt_E_RyFy = math.sqrt(E / RyFy) if RyFy > 0 else 0
+        
+        # Flange: Table D1.1b Case 7 — Flanges of rolled I-shapes
+        # lambda_hd = 0.30 * sqrt(E / (Ry * Fy))
+        lambda_hd_flange = 0.30 * sqrt_E_RyFy
+        flange_ok = self.lambda_flange <= lambda_hd_flange
+        
+        # Web: Table D1.1b Case 11 — Webs in flexure/combined
+        # lambda_hd = 2.5 * (1 - Ca)^2.3 * sqrt(E / (Ry * Fy))
+        Ca_eff = max(0.0, min(Ca, 1.0))
+        lambda_hd_web = 2.5 * ((1.0 - Ca_eff) ** 2.3) * sqrt_E_RyFy
+        web_ok = self.lambda_web <= lambda_hd_web
+        
+        ok = flange_ok and web_ok
+        
+        return {
+            "seismic_class": "highly_ductile" if ok else "NG",
+            "ok": ok,
+            "flange_ok": flange_ok,
+            "web_ok": web_ok,
+            "lambda_flange": round(self.lambda_flange, 3),
+            "lambda_hd_flange": round(lambda_hd_flange, 3),
+            "lambda_web": round(self.lambda_web, 3),
+            "lambda_hd_web": round(lambda_hd_web, 3),
+            "Ca": round(Ca_eff, 4),
+            "Ry": Ry
         }
 
 
@@ -862,6 +908,85 @@ class PMMCheck:
 
         return result
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# AISC 341-22 E3.4a — STRONG COLUMN-WEAK BEAM (SCWB)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StrongColumnWeakBeam:
+    """
+    AISC 341-22 E3.4a — Moment ratio check at beam-to-column connections.
+    
+    ΣMpc* / ΣMbe* > 1.0  (Eq. E3-1)
+    
+    ΣMpc* = Σ Zc·(Fyc - αs·|Pr|/Ag)      (E3-2)
+    ΣMbe* = Σ (Mpr + αs·Mv)               (E3-3)
+    
+    Mv = Vpr × sh  (shear amplification)
+    Vpr = 2·Mpr / Lh                       (E3-5)
+    Mpr = 1.1·Ry·Fy·Zx                    (probable moment)
+    sh ≈ db  (beam depth, unreinforced connection per AISC 358)
+    Lh = L_beam - 2·sh
+    """
+    
+    @staticmethod
+    def check(columns_at_joint, beams_at_joint, Ry=1.1, alpha_s=1.0):
+        """
+        columns_at_joint: list of (SectionProperties, Pr_N)
+            - Pr_N: axial force from governing load combo (N)
+        beams_at_joint: list of (SectionProperties, L_beam_mm)
+            - L_beam_mm: beam length (mm)
+        Ry: expected yield stress ratio (1.1 for hot-rolled)
+        alpha_s: 1.0 for LRFD
+        """
+        # ΣMpc* — Column plastic moment capacity (reduced by axial)
+        sum_Mpc = 0.0
+        for col_sec, Pr in columns_at_joint:
+            Zc = col_sec.Zx
+            Fyc = col_sec.Fy
+            Ag = col_sec.A
+            Mpc = Zc * (Fyc - alpha_s * abs(Pr) / Ag)
+            sum_Mpc += max(Mpc, 0.0)
+        
+        # ΣMbe* — Beam expected flexural strength with shear amplification
+        sum_Mbe = 0.0
+        for beam_sec, L_beam in beams_at_joint:
+            Fy_beam = beam_sec.Fy
+            Zx_beam = beam_sec.Zx
+            db = beam_sec.d  # beam depth (mm)
+            
+            # Mpr = 1.1 * Ry * Fy * Zx (probable moment at plastic hinge)
+            Mpr = 1.1 * Ry * Fy_beam * Zx_beam
+            
+            # sh = distance from column face to plastic hinge
+            # For unreinforced connections (AISC 358): sh ≈ db
+            sh = db
+            
+            # Lh = distance between plastic hinge locations
+            Lh = L_beam - 2.0 * sh
+            if Lh <= 0:
+                Lh = L_beam * 0.5  # Fallback: half of beam length
+            
+            # Vpr = 2*Mpr / Lh (capacity-limited seismic load, E3-5)
+            Vpr = 2.0 * Mpr / Lh
+            
+            # Mv = additional moment from shear amplification
+            Mv = Vpr * sh
+            
+            sum_Mbe += (Mpr + alpha_s * Mv)
+        
+        # Ratio
+        if sum_Mbe > 0:
+            ratio = sum_Mpc / sum_Mbe
+        else:
+            ratio = float('inf')  # No beams → automatically OK
+        
+        return {
+            "ratio": round(ratio, 4),
+            "ok": ratio > 1.0,
+            "sum_Mpc_Nmm": round(sum_Mpc, 1),
+            "sum_Mbe_Nmm": round(sum_Mbe, 1)
+        }
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOAD COMBINER — SNI 1727-2020 LRFD (Hybrid: Default + Custom)
@@ -877,13 +1002,16 @@ class LoadCombiner:
     """
 
     # 10 DSTL default combinations (SNI 1727-2020 Pasal 4.2.2 LRFD)
+    # Pattern Live Load Factor = 0.75 pada combo seismik (DSTL3-6)
+    # Per SAP2000 reference: PLLF menyeimbangkan pola pembebanan konservatif
+    # (100% beban di bentang terburuk) dengan kenyataan di lapangan
     DEFAULT_COMBINATIONS = {
         "DSTL1":  {"SelfWeight": 1.4, "ADL": 1.4},
         "DSTL2":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.6},
-        "DSTL3":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicX": 1.0},
-        "DSTL4":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicX": -1.0},
-        "DSTL5":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicY": 1.0},
-        "DSTL6":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 1.0, "SeismicY": -1.0},
+        "DSTL3":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.75, "SeismicX": 1.0},
+        "DSTL4":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.75, "SeismicX": -1.0},
+        "DSTL5":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.75, "SeismicY": 1.0},
+        "DSTL6":  {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.75, "SeismicY": -1.0},
         "DSTL7":  {"SelfWeight": 0.9, "ADL": 0.9, "SeismicX": 1.0},
         "DSTL8":  {"SelfWeight": 0.9, "ADL": 0.9, "SeismicX": -1.0},
         "DSTL9":  {"SelfWeight": 0.9, "ADL": 0.9, "SeismicY": 1.0},
@@ -893,10 +1021,10 @@ class LoadCombiner:
     DEFAULT_LABELS = {
         "DSTL1":  "1.4(D+ADL)",
         "DSTL2":  "1.2(D+ADL) + 1.6L",
-        "DSTL3":  "1.2(D+ADL) + 1.0L + 1.0EQx",
-        "DSTL4":  "1.2(D+ADL) + 1.0L - 1.0EQx",
-        "DSTL5":  "1.2(D+ADL) + 1.0L + 1.0EQy",
-        "DSTL6":  "1.2(D+ADL) + 1.0L - 1.0EQy",
+        "DSTL3":  "1.2(D+ADL) + 0.75L + 1.0EQx",
+        "DSTL4":  "1.2(D+ADL) + 0.75L - 1.0EQx",
+        "DSTL5":  "1.2(D+ADL) + 0.75L + 1.0EQy",
+        "DSTL6":  "1.2(D+ADL) + 0.75L - 1.0EQy",
         "DSTL7":  "0.9(D+ADL) + 1.0EQx",
         "DSTL8":  "0.9(D+ADL) - 1.0EQx",
         "DSTL9":  "0.9(D+ADL) + 1.0EQy",
@@ -1016,11 +1144,23 @@ class LoadCombiner:
 class SteelDesignEngine:
     """Main engine: reads Result.json, designs all elements, writes output."""
 
+    # DCR Limit: per SAP2000 reference, status NG jika ratio > 0.95
+    DCR_LIMIT = 0.95
+    
+    # Stiffness Reduction Factor τb = 1.0 (fixed)
+    # Konsisten dengan SAP2000 'Tau-b Fixed'. Nilai ini sudah implisit
+    # dalam Effective Length Method yang digunakan.
+    TAU_B = 1.0
+
     def __init__(self, result_path: str, output_path: str):
         self.result_path = result_path
         self.output_path = output_path
         self.data = None
         self.results: List[ElementDesignResult] = []
+        # Seismic parameters (populated from JSON during run())
+        self.frame_type = "SRPMB/OMF"
+        self.Ry = 1.0
+        self.rho = 1.0
 
     def run(self):
         """Execute the full design workflow."""
@@ -1037,11 +1177,20 @@ class SteelDesignEngine:
         model_elements = self.data["model_data"]["model_elements"]
         analysis = self.data["analysis_results"]
 
+        # 1b. Read seismic parameters from JSON
+        seismic_params = self.data.get("model_data", {}).get("seismic_parameters", {})
+        self.frame_type = seismic_params.get("frame_type", "SRPMB/OMF")
+        self.Ry = seismic_params.get("Ry", 1.0)
+        self.rho = seismic_params.get("rho", 1.0)
+
         # 2. Build load combinations (hybrid: default + custom)
         combo_config = self.data.get("model_data", {}).get("load_combination_config", None)
         available = [k for k in analysis.keys() if not k.startswith('_')]
         LoadCombiner.build(combo_config, available)
 
+        print(f"  Frame type   : {self.frame_type}")
+        print(f"  Ry           : {self.Ry}")
+        print(f"  DCR Limit    : {self.DCR_LIMIT}")
         print(f"  Jumlah elemen: {len(model_elements)}")
         print(f"  Load patterns: {available}")
         print(f"  Kombinasi desain: {len(LoadCombiner.COMBINATIONS)}")
@@ -1226,7 +1375,7 @@ class SteelDesignEngine:
             gov_location = best_shear_location
             ratio_type = "Shear"
 
-        status = "OK" if governing_ratio <= 1.0 else "Overstressed"
+        # (status determined after SMF checks below)
 
         # Update cap with best Cb for reporting
         cap.Cb = best_pmm.Pc_used  # will be overwritten below
@@ -1238,6 +1387,63 @@ class SteelDesignEngine:
                 gov_moments.append(f.Mz)
             cap.Cb = FlexureCapacity.calc_Cb(gov_moments)
             cap.McMajor = FlexureCapacity.design_major(sec, Lb, cap.Cb, flex_class)
+
+        # --- SMF-specific checks (AISC 341-22) ---
+        smf_checks = None
+        smf_ng_reasons = []  # Collect SMF failure reasons
+        if self.frame_type in ["SRPMK/SMF", "SMF"]:
+            smf_checks = {}
+            
+            # L/r ≤ 60 for columns (AISC 341 E3.4c(b))
+            if elem_type == "Column":
+                Lr_x = Lx / sec.rx if sec.rx > 0 else 999
+                Lr_y = Ly / sec.ry if sec.ry > 0 else 999
+                Lr_max = max(Lr_x, Lr_y)
+                smf_checks["Lr_x"] = round(Lr_x, 2)
+                smf_checks["Lr_y"] = round(Lr_y, 2)
+                smf_checks["Lr_max"] = round(Lr_max, 2)
+                smf_checks["Lr_ok"] = Lr_max <= 60.0
+                if not smf_checks["Lr_ok"]:
+                    smf_ng_reasons.append("L/r={:.1f}>60".format(Lr_max))
+            
+            # Lb/ry stability bracing for highly ductile members
+            # AISC 341-22 D1.2b: Lb ≤ 0.086·ry·E/(Ry·Fy)
+            # (AISC 341-16 used 0.095; AISC 341-22 updated to 0.086)
+            if sec.ry > 0:
+                Lb_ry_actual = Lb / sec.ry
+                Lb_ry_limit = 0.086 * sec.E / (self.Ry * sec.Fy)
+                smf_checks["Lb_ry"] = round(Lb_ry_actual, 2)
+                smf_checks["Lb_ry_limit"] = round(Lb_ry_limit, 2)
+                smf_checks["Lb_ry_ok"] = Lb_ry_actual <= Lb_ry_limit
+                if not smf_checks["Lb_ry_ok"]:
+                    smf_ng_reasons.append(
+                        "Lb/ry={:.1f}>{:.1f}".format(Lb_ry_actual, Lb_ry_limit))
+            
+            # Seismic ductility (highly ductile limits)
+            # Ca = Pr / (Fy * Ag) — using Pr from governing combo
+            Pr_gov = abs(best_pmm.Pr) if best_pmm.Pr != 0 else 0.0
+            Ca = Pr_gov / (sec.Fy * sec.A) if (sec.Fy * sec.A) > 0 else 0.0
+            seismic_class = classifier.classify_seismic(
+                self.frame_type, Ry=self.Ry, Ca=Ca)
+            smf_checks["seismic_ductility"] = seismic_class
+            if not seismic_class.get("ok", True):
+                reasons = []
+                if not seismic_class.get("flange_ok", True):
+                    reasons.append("flange")
+                if not seismic_class.get("web_ok", True):
+                    reasons.append("web")
+                smf_ng_reasons.append("HD-NG({})".format("+".join(reasons)))
+        
+        # --- Final status determination ---
+        # Combine DCR status with SMF checks
+        if governing_ratio > self.DCR_LIMIT and smf_ng_reasons:
+            status = "Overstressed; " + "; ".join(smf_ng_reasons)
+        elif governing_ratio > self.DCR_LIMIT:
+            status = "Overstressed"
+        elif smf_ng_reasons:
+            status = "SMF-NG: " + "; ".join(smf_ng_reasons)
+        else:
+            status = "OK"
 
         return ElementDesignResult(
             element_id=elem["id"],
@@ -1254,7 +1460,8 @@ class SteelDesignEngine:
             shear_detail=best_shear,
             shear_combo=best_shear_combo,
             shear_location_mm=best_shear_location,
-            station_details=all_station_details
+            station_details=all_station_details,
+            smf_checks=smf_checks
         )
 
     def _extract_section(self, elem: Dict) -> SectionProperties:
@@ -1411,7 +1618,7 @@ class SteelDesignEngine:
             print(f"  {'Group':<18} {'Grid Position':<20} {'Seg':>4} {'Max DCR':>10} {'Status'}")
             print(f"{'=' * 70}")
             for g in fab_groups_output:
-                status = "OK" if g["max_fab_dcr"] <= 1.0 else "NG"
+                status = "OK" if g["max_fab_dcr"] <= SteelDesignEngine.DCR_LIMIT else "NG"
                 print(f"  {g['group_name']:<18} {g['grid_position']:<20} {g['total_segments']:>4} "
                       f"{g['max_fab_dcr']:>10.4f} {status}")
             print(f"{'=' * 70}")
@@ -1426,7 +1633,11 @@ class SteelDesignEngine:
             "design_info": {
                 "code": "AISC 360-22",
                 "method": "LRFD",
-                "framing_type": "SRPMK",
+                "framing_type": self.frame_type,
+                "dcr_limit": self.DCR_LIMIT,
+                "Ry": self.Ry,
+                "rho": self.rho,
+                "tau_b": self.TAU_B,
                 "units": {
                     "force": "kN",
                     "moment": "kN-m",
@@ -1501,7 +1712,8 @@ class SteelDesignEngine:
                     "PhiVnMajor_kN": round(r.shear_detail.PhiVnMajor / 1000, 2) if r.shear_detail else 0
                 },
 
-                "station_details": r.station_details if r.station_details else []
+                "station_details": r.station_details if r.station_details else [],
+                "smf_checks": r.smf_checks
             }
             output["elements"].append(elem_out)
 
