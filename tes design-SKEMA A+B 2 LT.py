@@ -246,6 +246,224 @@ class TensionCapacity:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# K FACTOR CALCULATOR — AISC 360-22 Commentary C-A-7.2 (Nomogram)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class KFactorCalculator:
+    """
+    Calculate effective length factor K using AISC alignment chart (nomogram)
+    for sidesway uninhibited (moment) frames.
+    
+    Reference: AISC 360-22 Commentary Eq. C-A-7-2 and C-A-7-3.
+    """
+
+    @staticmethod
+    def build_topology_map(model_elements: List[Dict]) -> Dict:
+        """
+        Build node-to-elements connectivity map from model data.
+        Returns: {
+            node_id: {
+                'columns': [(elem_dict, 'start'/'end'), ...],
+                'beams':   [(elem_dict, 'start'/'end'), ...],
+                'is_support': bool
+            }
+        }
+        """
+        node_map = {}
+        for elem in model_elements:
+            topo = elem.get("topology", {})
+            start_id = str(topo.get("start_node_id", ""))
+            end_id = str(topo.get("end_node_id", ""))
+            start_desc = topo.get("start_node_desc", "")
+            end_desc = topo.get("end_node_desc", "")
+            elem_type = elem.get("type", "")
+            kind = "columns" if elem_type == "Column" else "beams"
+
+            for nid, end_label, desc in [(start_id, "start", start_desc),
+                                          (end_id, "end", end_desc)]:
+                if nid not in node_map:
+                    node_map[nid] = {
+                        "columns": [], "beams": [],
+                        "is_support": "Support" in desc,
+                        "support_type": "fixed"  # Default: fixed (G=1.0)
+                    }
+                node_map[nid][kind].append((elem, end_label))
+                # Update support flag if any desc says support
+                if "Support" in desc:
+                    node_map[nid]["is_support"] = True
+        return node_map
+
+    @staticmethod
+    def _get_EI_L(elem: Dict, axis: str) -> float:
+        """
+        Calculate EI/L for an element along specified axis.
+        axis: 'major' uses Iz (strong axis), 'minor' uses Iy (weak axis).
+        """
+        sec = elem.get("section", {})
+        mat = elem.get("material", {})
+        topo = elem.get("topology", {})
+        E = mat.get("E_MPa", 200000.0)
+        if axis == "major":
+            I = sec.get("Iz_mm4", 0)
+        else:
+            I = sec.get("Iy_mm4", 0)
+        L = topo.get("length_mm", 1.0)
+        if L <= 0:
+            L = 1.0
+        return E * I / L
+
+    @staticmethod
+    def calc_G(node_id: str, node_map: Dict, axis: str = "major") -> float:
+        """
+        Calculate G factor at a node per AISC C-A-7-3:
+        G = Σ(EI/L)_columns / Σ(EI/L)_girders
+
+        Boundary conditions:
+        - Fixed base (support with fixed type): G = 1.0
+        - Pinned base (support with pinned type): G = 10.0
+        - No beams connected: G = 10.0 (conservative)
+        """
+        node_info = node_map.get(node_id, {})
+
+        # Support node
+        if node_info.get("is_support", False):
+            support_type = node_info.get("support_type", "fixed")
+            if support_type == "pinned":
+                return 10.0
+            else:  # fixed
+                return 1.0
+
+        # Sum EI/L for columns at this node
+        sum_col = 0.0
+        for (elem, _) in node_info.get("columns", []):
+            sum_col += KFactorCalculator._get_EI_L(elem, axis)
+
+        # Sum EI/L for beams at this node
+        sum_beam = 0.0
+        for (elem, _) in node_info.get("beams", []):
+            sum_beam += KFactorCalculator._get_EI_L(elem, axis)
+
+        if sum_beam <= 0:
+            return 10.0  # No beams → conservative (cantilever-like)
+
+        return sum_col / sum_beam
+
+    @staticmethod
+    def solve_K_uninhibited(GA: float, GB: float) -> float:
+        """
+        Solve AISC Eq. C-A-7-2 for sidesway uninhibited frames:
+        f(K) = [GA·GB·(π/K)² - 36] / [6·(GA + GB)] - (π/K)/tan(π/K) = 0
+
+        Uses Newton-Raphson method with analytical derivative.
+        Initial guess from French approximation formula.
+
+        K for sidesway uninhibited is always >= 1.0.
+        """
+        pi = math.pi
+
+        # French approximation for initial guess
+        numerator = 1.6 * GA * GB + 4.0 * (GA + GB) + 7.5
+        denominator = 2.3 * GA * GB + 1.5 * (GA + GB) + 7.5
+        if denominator > 0:
+            K = math.sqrt(numerator / denominator)
+        else:
+            K = 2.0
+        K = max(K, 1.001)  # Must be > 1 for sidesway uninhibited
+
+        sum_G = GA + GB
+        prod_G = GA * GB
+
+        def f(K_val):
+            """Nomogram equation C-A-7-2."""
+            x = pi / K_val
+            term1 = (prod_G * x * x - 36.0) / (6.0 * sum_G) if sum_G > 0 else 0.0
+            # Handle tan(x) near singularity
+            tan_x = math.tan(x)
+            if abs(tan_x) < 1e-12:
+                return 1e10
+            term2 = x / tan_x
+            return term1 - term2
+
+        def f_prime(K_val):
+            """Analytical derivative of f with respect to K."""
+            x = pi / K_val
+            dx_dK = -pi / (K_val * K_val)
+
+            # d(term1)/dK
+            dterm1_dx = (2.0 * prod_G * x) / (6.0 * sum_G) if sum_G > 0 else 0.0
+            dterm1_dK = dterm1_dx * dx_dK
+
+            # d(term2)/dK where term2 = x/tan(x)
+            tan_x = math.tan(x)
+            cos_x = math.cos(x)
+            if abs(cos_x) < 1e-12:
+                return 1e10
+            # d(x/tan(x))/dx = (tan(x) - x·sec²(x)) / tan²(x)
+            #                = 1/tan(x) - x/(sin(x)·cos(x))
+            # Simplified: d/dx[x·cot(x)] = cot(x) - x/sin²(x)
+            sin_x = math.sin(x)
+            if abs(sin_x) < 1e-12:
+                return 1e10
+            dterm2_dx = math.cos(x) / sin_x - x / (sin_x * sin_x)
+            dterm2_dK = dterm2_dx * dx_dK
+
+            return dterm1_dK - dterm2_dK
+
+        # Newton-Raphson iteration
+        for _ in range(50):
+            fk = f(K)
+            fpk = f_prime(K)
+            if abs(fpk) < 1e-15:
+                break
+            K_new = K - fk / fpk
+            if K_new < 1.0:
+                K_new = 1.001  # K ≥ 1.0 for sidesway uninhibited
+            if abs(K_new - K) < 1e-10:
+                K = K_new
+                break
+            K = K_new
+
+        return max(round(K, 4), 1.0)
+
+    @staticmethod
+    def compute_K_for_element(elem: Dict, node_map: Dict) -> Tuple[float, float, Dict]:
+        """
+        Compute Kx (major) and Ky (minor) for a column element.
+        For beams, K = 1.0 (not compression-governed).
+
+        Returns: (Kx, Ky, debug_info)
+        """
+        elem_type = elem.get("type", "Column")
+        if elem_type != "Column":
+            return (1.0, 1.0, {"method": "beam_default"})
+
+        topo = elem.get("topology", {})
+        start_id = str(topo.get("start_node_id", ""))
+        end_id = str(topo.get("end_node_id", ""))
+
+        # Major axis (Iz / strong axis)
+        GA_major = KFactorCalculator.calc_G(start_id, node_map, "major")
+        GB_major = KFactorCalculator.calc_G(end_id, node_map, "major")
+        Kx = KFactorCalculator.solve_K_uninhibited(GA_major, GB_major)
+
+        # Minor axis (Iy / weak axis)
+        GA_minor = KFactorCalculator.calc_G(start_id, node_map, "minor")
+        GB_minor = KFactorCalculator.calc_G(end_id, node_map, "minor")
+        Ky = KFactorCalculator.solve_K_uninhibited(GA_minor, GB_minor)
+
+        debug = {
+            "method": "nomogram_uninhibited",
+            "GA_major": round(GA_major, 4),
+            "GB_major": round(GB_major, 4),
+            "GA_minor": round(GA_minor, 4),
+            "GB_minor": round(GB_minor, 4),
+            "Kx": Kx,
+            "Ky": Ky
+        }
+        return (Kx, Ky, debug)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CHAPTER E — COMPRESSION
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -828,7 +1046,11 @@ class SteelDesignEngine:
         print(f"  Load patterns: {available}")
         print(f"  Kombinasi desain: {len(LoadCombiner.COMBINATIONS)}")
 
-        # 2. Design each element
+        # 2b. Build topology map for K factor calculation
+        self.node_map = KFactorCalculator.build_topology_map(model_elements)
+        print(f"  Node map     : {len(self.node_map)} nodes")
+
+        # 3. Design each element
         print(f"\n{'-' * 70}")
         print(f"  {'Frame':<8} {'Type':<8} {'Section':<22} {'Ratio':>8} {'Combo':<8} {'Status'}")
         print(f"{'-' * 70}")
@@ -869,8 +1091,13 @@ class SteelDesignEngine:
         # --- Extract properties ---
         sec = self._extract_section(elem)
         dp = elem.get("design_parameters", {})
-        Kx = dp.get("Kx", 1.0)
-        Ky = dp.get("Ky", 1.0)
+
+        # --- K Factor: Compute via nomogram (sidesway uninhibited) ---
+        Kx_calc, Ky_calc, k_debug = KFactorCalculator.compute_K_for_element(
+            elem, self.node_map)
+        # Allow manual override from design_parameters if present
+        Kx = dp.get("Kx", Kx_calc)
+        Ky = dp.get("Ky", Ky_calc)
         Kz = dp.get("Kz", 1.0)        # E4: Torsional K factor (default 1.0)
         Lx = dp.get("Lx_mm", 4000.0)
         Ly = dp.get("Ly_mm", 4000.0)
@@ -892,9 +1119,9 @@ class SteelDesignEngine:
         PcComp = CompressionCapacity.design(sec, Kx, Ky, Lx, Ly, axial_class,
                                             Kz=Kz, Lcz=Lcz)
 
-        # For Cb: collect major moments from DeadLoad (or use default 1.0 initially)
-        # We'll compute Cb per combo later if needed; use design_parameters Cb as default
-        Cb_default = dp.get("Cb", 1.0)
+        # Cb: Conservatively use 1.0 (Engine calculates per combo if extended)
+        # SRPMB/OMF: Cb tidak disimpan di design_parameters; dihitung di Engine
+        Cb_default = 1.0
 
         McMajor = FlexureCapacity.design_major(sec, Lb, Cb_default, flex_class)
         McMinor = FlexureCapacity.design_minor(sec, flex_class)
