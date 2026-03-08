@@ -20,6 +20,7 @@ clr.AddReference('RevitAPIUI')
 
 from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Structure import StructuralType, StructuralFramingUtils
+from Autodesk.Revit.DB.Structure import TranslationRotationValue, AnalyticalModelSelector
 from Autodesk.Revit.UI import TaskDialog
 from pyrevit import script, HOST_APP, revit # Added revit import
 
@@ -101,6 +102,24 @@ COL_TXT_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structur
 BEAM_RFA_PATH = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Framing\Steel\AISC 15.0\M_W Shapes.rfa"
 COL_RFA_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structural Columns\Steel\AISC 15.0\M_W Shapes-Column.rfa"
 
+# ================= BOUNDARY CONDITIONS =================
+
+# Tipe tumpuan pada dasar kolom (Z = 0):
+#   "Fixed"  = Jepit   (semua DOF restrained)
+#   "Pinned" = Sendi   (translasi restrained, rotasi free)
+#   "Roller" = Roller  (hanya Tz restrained)
+SUPPORT_TYPE = "Pinned"
+
+# DOF auto-resolver (internal, user tidak perlu ubah)
+_SUPPORT_DOF_MAP = {
+    "Fixed":  [1, 1, 1, 1, 1, 1],
+    "Pinned": [1, 1, 1, 0, 0, 0],
+    "Roller": [0, 0, 1, 0, 0, 0],
+}
+SUPPORT_DOF = _SUPPORT_DOF_MAP.get(SUPPORT_TYPE, [1, 1, 1, 1, 1, 1])
+
+# =======================================================
+
 # ================= FLOOR LOAD INPUT =================
 
 # --- Input Parameters ---
@@ -110,7 +129,7 @@ SLAB_ADD_THICKNESS          = 30.0         # Tebal spesi/finishing (mm)
 # --- Constants ---
 CONCRETE_UNIT_WEIGHT_kN_m3  = 24.0         # Berat jenis beton bertulang (kN/m³)
 MORTAR_WEIGHT_kg_m2_cm      = 21.0         # Berat spesi per cm tebal (kg/m²/cm)
-GRAVITY_m_s2                = 9.81    # Percepatan gravitasi (m/s²)
+GRAVITY_m_s2                = 9.81         # Percepatan gravitasi (m/s²)
 
 # --- Hitung Pressure ---
 slab_thickness_m            = SLAB_THICKNESS / 1000.0
@@ -168,9 +187,6 @@ CUSTOM_LOAD_COMBOS = {
     "COMB2": {"SelfWeight": 1.5, "ADL": 1.5, "LIVE": 1.5},
     # "COMB3": {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.5, "EQx": 1.3},
 }
-
-# ============================================================
-
 
 # ================= SEISMIC PARAMETERS (SNI 1726) =================
 SITE_CLASS = "SC"        # Kelas situs: SA, SB, SC, SD, SE
@@ -2586,6 +2602,12 @@ try:
             "custom_combinations": CUSTOM_LOAD_COMBOS
         },
         
+        # Support / Boundary Conditions
+        "support_config": {
+            "type": SUPPORT_TYPE,
+            "dof": SUPPORT_DOF
+        },
+        
         # Legacy fields (backward compatibility)
         "slab_sw_pressure": SLAB_SW_PRESSURE,
         "slab_adl_pressure": SLAB_ADL_PRESSURE,
@@ -2627,6 +2649,186 @@ try:
     if CUSTOM_LOAD_COMBOS:
         print("   Custom Combos: {}".format(list(CUSTOM_LOAD_COMBOS.keys())))
     print("   Total Elements: {}".format(len(final_elements_list)))
+    print("   Support Type: {}".format(SUPPORT_TYPE))
+    
+    # ================================================================
+    # APPLY BOUNDARY CONDITIONS TO REVIT ANALYTICAL MODEL
+    # ================================================================
+    # Load SEMUA 3 BC families (Revit membutuhkan ketiganya)
+    BC_FAMILIES = [
+        r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Boundary Conditions\M_Boundary Condition-Fixed.rfa",
+        r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Boundary Conditions\M_Boundary Condition-Pinned.rfa",
+        r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Boundary Conditions\M_Boundary Condition-Roller.rfa",
+    ]
+    
+    try:
+        with revit.Transaction("Load BC Families"):
+            for rfa_path in BC_FAMILIES:
+                fname = os.path.splitext(os.path.basename(rfa_path))[0]
+                # Cek apakah sudah loaded
+                already = False
+                for fam in FilteredElementCollector(doc).OfClass(Family):
+                    if fam.Name == fname:
+                        already = True
+                        break
+                if already:
+                    print("   BC [OK] " + fname)
+                    continue
+                # Load dari library
+                if os.path.exists(rfa_path):
+                    result = doc.LoadFamily(rfa_path)
+                    if result:
+                        print("   BC [LOADED] " + fname)
+                    else:
+                        print("   BC [EXISTS] " + fname)
+                else:
+                    print("   BC [MISSING] " + rfa_path)
+        print("   BC Family check completed.")
+    except Exception as e_bc:
+        print("   WARNING: BC Family error: " + str(e_bc))
+    
+    # ================================================================
+    # CONFIGURE STRUCTURAL SETTINGS + APPLY BOUNDARY CONDITIONS
+    # ================================================================
+    try:
+        from Autodesk.Revit.DB.Structure import (
+            AnalyticalMember, AnalyticalToPhysicalAssociationManager,
+            StructuralSettings as SS
+        )
+        
+        _BC_FAMILY_NAMES = {
+            "Fixed":  "M_Boundary Condition-Fixed",
+            "Pinned": "M_Boundary Condition-Pinned",
+            "Roller": "M_Boundary Condition-Roller",
+        }
+        
+        # ---- Step 1: Collect BC FamilySymbol IDs ----
+        bc_symbol_ids = {}
+        for fs in FilteredElementCollector(doc).OfClass(FamilySymbol):
+            fam = fs.Family
+            if fam and fam.Name in _BC_FAMILY_NAMES.values():
+                if not fs.IsActive:
+                    with revit.Transaction("Activate BC Symbol"):
+                        fs.Activate()
+                        doc.Regenerate()
+                bc_symbol_ids[fam.Name] = fs.Id
+        
+        print("   BC Symbols: {} loaded".format(len(bc_symbol_ids)))
+        
+        # ---- Step 2: Auto-configure BC Settings via direct properties ----
+        ss = SS.GetStructuralSettings(doc)
+        if ss is not None and len(bc_symbol_ids) >= 3:
+            settings_ok = 0
+            
+            with revit.Transaction("Set BC Family Symbols in Settings"):
+                try:
+                    ss.BoundaryConditionFamilySymbolFixed = bc_symbol_ids[_BC_FAMILY_NAMES["Fixed"]]
+                    settings_ok += 1
+                except Exception as ef:
+                    print("   BC Settings Fixed error: " + str(ef))
+                
+                try:
+                    ss.BoundaryConditionFamilySymbolPinned = bc_symbol_ids[_BC_FAMILY_NAMES["Pinned"]]
+                    settings_ok += 1
+                except Exception as ep:
+                    print("   BC Settings Pinned error: " + str(ep))
+                
+                try:
+                    ss.BoundaryConditionFamilySymbolRoller = bc_symbol_ids[_BC_FAMILY_NAMES["Roller"]]
+                    settings_ok += 1
+                except Exception as er:
+                    print("   BC Settings Roller error: " + str(er))
+            
+            print("   BC Settings: {}/3 assigned".format(settings_ok))
+        
+        # ---- Step 3: Apply Boundary Conditions to Column Bases ----
+        assoc_manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
+        
+        columns = FilteredElementCollector(doc)\
+            .OfCategory(BuiltInCategory.OST_StructuralColumns)\
+            .WhereElementIsNotElementType().ToElements()
+        
+        # Use TranslationRotationValue for DOF
+        tv_fixed = TranslationRotationValue.Fixed
+        tv_release = TranslationRotationValue.Release
+        
+        if SUPPORT_TYPE == "Fixed":
+            dof = [tv_fixed]*6
+        elif SUPPORT_TYPE == "Pinned":
+            dof = [tv_fixed, tv_fixed, tv_fixed, tv_release, tv_release, tv_release]
+        else:  # Roller
+            dof = [tv_release, tv_release, tv_fixed, tv_release, tv_release, tv_release]
+        
+        bc_count = 0
+        bc_skip = 0
+        bc_errors = []
+        
+        with revit.Transaction("Apply Boundary Conditions"):
+            for col in columns:
+                try:
+                    anal_id = assoc_manager.GetAssociatedElementId(col.Id)
+                    if anal_id == ElementId.InvalidElementId:
+                        bc_skip += 1
+                        continue
+                    
+                    anal_member = doc.GetElement(anal_id)
+                    if anal_member is None:
+                        bc_skip += 1
+                        continue
+                    
+                    curve = anal_member.GetCurve()
+                    if curve is None:
+                        bc_skip += 1
+                        continue
+                    
+                    pt0 = curve.GetEndPoint(0)
+                    pt1 = curve.GetEndPoint(1)
+                    base_point = pt0 if pt0.Z <= pt1.Z else pt1
+                    
+                    bc_created = False
+                    
+                    # Try: NewPointBoundaryConditions via analytical member reference
+                    # Get stable reference from geometry
+                    try:
+                        geo_opts = Options()
+                        geo_opts.ComputeReferences = True
+                        geo = anal_member.get_Geometry(geo_opts)
+                        ref = None
+                        if geo:
+                            for g in geo:
+                                if hasattr(g, 'GetEndPointReference'):
+                                    base_idx = 0 if pt0.Z <= pt1.Z else 1
+                                    ref = g.GetEndPointReference(base_idx)
+                                    if ref:
+                                        break
+                        
+                        if ref:
+                            bc = doc.Create.NewPointBoundaryConditions(
+                                ref,
+                                dof[0], 0.0, dof[1], 0.0, dof[2], 0.0,
+                                dof[3], 0.0, dof[4], 0.0, dof[5], 0.0
+                            )
+                            if bc is not None:
+                                bc_created = True
+                                bc_count += 1
+                    except Exception as eBC:
+                        if len(bc_errors) < 3:
+                            bc_errors.append("Col {}: {}".format(col.Id.IntegerValue, str(eBC)[:80]))
+                    
+                    if not bc_created:
+                        bc_skip += 1
+                        
+                except Exception as e_col_bc:
+                    bc_skip += 1
+                    if len(bc_errors) < 3:
+                        bc_errors.append("Col {}: {}".format(col.Id.IntegerValue, str(e_col_bc)[:80]))
+        
+        print("   BC Applied: {} columns, {} skipped (type={})".format(
+            bc_count, bc_skip, SUPPORT_TYPE))
+        for err in bc_errors:
+            print("   BC Detail: " + err)
+    except Exception as e_bc:
+        print("   WARNING: BC error: " + str(e_bc))
 
 except Exception as e:
     json_success = False
@@ -2787,7 +2989,7 @@ if json_success:
                             
                             # Tambah deskripsi
                             if category == "support":
-                                node_info["description"] = "Support Node (Fixed) - Z=0"
+                                node_info["description"] = "Support Node ({}) - Z=0".format(SUPPORT_TYPE)
                             elif category == "floor_joint":
                                 lantai = int(round(z_rounded / height_mm))
                                 node_info["description"] = "Joint Node (Lantai {})".format(lantai)
