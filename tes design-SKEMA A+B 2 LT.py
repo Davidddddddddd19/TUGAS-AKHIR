@@ -304,7 +304,7 @@ class KFactorCalculator:
     """
 
     @staticmethod
-    def build_topology_map(model_elements: List[Dict]) -> Dict:
+    def build_topology_map(model_elements: List[Dict], support_type: str = "fixed") -> Dict:
         """
         Build node-to-elements connectivity map from model data.
         Returns: {
@@ -331,7 +331,7 @@ class KFactorCalculator:
                     node_map[nid] = {
                         "columns": [], "beams": [],
                         "is_support": "Support" in desc,
-                        "support_type": "fixed"  # Default: fixed (G=1.0)
+                        "support_type": support_type.lower()  # From user config
                     }
                 node_map[nid][kind].append((elem, end_label))
                 # Update support flag if any desc says support
@@ -1196,7 +1196,11 @@ class SteelDesignEngine:
         print(f"  Kombinasi desain: {len(LoadCombiner.COMBINATIONS)}")
 
         # 2b. Build topology map for K factor calculation
-        self.node_map = KFactorCalculator.build_topology_map(model_elements)
+        # Read support type from model data
+        support_config = self.data.get("model_data", {}).get("support_config", {})
+        support_type = support_config.get("type", "Fixed")
+        self.support_type = support_type
+        self.node_map = KFactorCalculator.build_topology_map(model_elements, support_type)
         print(f"  Node map     : {len(self.node_map)} nodes")
 
         # 3. Design each element
