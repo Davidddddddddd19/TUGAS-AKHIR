@@ -2235,6 +2235,11 @@ try:
         else:
             from Autodesk.Revit.DB.Structure import AnalyticalMember, AnalyticalToPhysicalAssociationManager, AnalyticalStructuralRole
             assoc_manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
+            
+            # Ambil level elevations untuk split kolom per-story
+            all_levels_sorted = sorted(
+                FilteredElementCollector(doc).OfClass(Level).ToElements(),
+                key=lambda lv: lv.Elevation)
 
             for phys_el in physical_elements:
                 try:
@@ -2248,28 +2253,62 @@ try:
                             is_existing_valid = True
                     
                     if is_existing_valid:
-                        # Jika sudah ada, kita hitung sebagai bagian dari total sukses
                         count_processed_successfully += 1
                         continue 
 
-                    # Jika belum ada, Buat Baru (New)
+                    cat_id = phys_el.Category.Id.IntegerValue
+                    is_column = (cat_id == int(BuiltInCategory.OST_StructuralColumns))
+                    fab_info = _FAB_COL_MAP.get(phys_el.Id.IntegerValue) if is_column else None
+                    
+                    if fab_info and is_column:
+                        seg_base_idx, seg_top_idx = fab_info
+                        n_stories = seg_top_idx - seg_base_idx
+                        
+                        if n_stories > 1:
+                            # SPLIT: buat N analytical members per-story
+                            # Ambil XY dari lokasi elemen
+                            loc = phys_el.Location
+                            if isinstance(loc, LocationCurve):
+                                pt = loc.Curve.GetEndPoint(0)
+                            elif isinstance(loc, LocationPoint):
+                                pt = loc.Point
+                            else:
+                                pt = None
+                            
+                            if pt:
+                                first_am = True
+                                for k in range(seg_base_idx, seg_top_idx):
+                                    z_base = all_levels_sorted[k].Elevation if k < len(all_levels_sorted) else 0
+                                    z_top = all_levels_sorted[k+1].Elevation if k+1 < len(all_levels_sorted) else z_base + 1
+                                    
+                                    story_curve = Line.CreateBound(
+                                        XYZ(pt.X, pt.Y, z_base),
+                                        XYZ(pt.X, pt.Y, z_top))
+                                    
+                                    am = AnalyticalMember.Create(doc, story_curve)
+                                    am.StructuralRole = AnalyticalStructuralRole.StructuralRoleColumn
+                                    # Hanya associate analytical member pertama (Revit: 1 association per physical)
+                                    if first_am:
+                                        assoc_manager.AddAssociation(am.Id, phys_el.Id)
+                                        first_am = False
+                                
+                                count_processed_successfully += 1
+                                print("    Column {} -> {} analytical members (per-story)".format(
+                                    phys_el.Id, n_stories))
+                            continue
+                    
+                    # Default: 1 analytical member (balok atau kolom single-story)
                     curve = get_element_curve(phys_el)
                     
                     if curve:
-                        # Create
                         new_am = AnalyticalMember.Create(doc, curve)
                         
-                        # Set Role
-                        cat_id = phys_el.Category.Id.IntegerValue
-                        if cat_id == int(BuiltInCategory.OST_StructuralColumns):
+                        if is_column:
                             new_am.StructuralRole = AnalyticalStructuralRole.StructuralRoleColumn
                         else:
                             new_am.StructuralRole = AnalyticalStructuralRole.StructuralRoleBeam
 
-                        # Associate
                         assoc_manager.AddAssociation(new_am.Id, phys_el.Id)
-                        
-                        # Hitung sukses
                         count_processed_successfully += 1
                     else:
                         print("    Warning: Gagal ekstrak geometri ID {}".format(phys_el.Id))
