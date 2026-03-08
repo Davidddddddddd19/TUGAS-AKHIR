@@ -1265,11 +1265,10 @@ def run_load_case(data, case_type, pattern_def=None):
             I_minor = float(sec.get('Iy_mm4', 0))  # Weak axis (Iy)
             
             if length_mm <= 0:
-                return None                    
-                nt
-            subs = sub_elements_map.g
-            # Get nodes for this elemeet(eid)
-                   
+                return None
+            
+            subs = sub_elements_map.get(eid)
+            # Get nodes for this element
             # 9-point sampling (every 0.125)
             sample_ratios = [i * 0.125 for i in range(9)]  # 0, 0.125, 0.25, ..., 1.0
             
