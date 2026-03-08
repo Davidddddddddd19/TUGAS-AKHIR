@@ -1265,11 +1265,11 @@ def run_load_case(data, case_type, pattern_def=None):
             I_minor = float(sec.get('Iy_mm4', 0))  # Weak axis (Iy)
             
             if length_mm <= 0:
-                return None
-                
-            # Get nodes for this element
-            subs = sub_elements_map.get(eid)
-            
+                return None                    
+                nt
+            subs = sub_elements_map.g
+            # Get nodes for this elemeet(eid)
+                   
             # 9-point sampling (every 0.125)
             sample_ratios = [i * 0.125 for i in range(9)]  # 0, 0.125, 0.25, ..., 1.0
             
@@ -1398,6 +1398,11 @@ def run_load_case(data, case_type, pattern_def=None):
         all_z = [c[2] for c in node_coords.values()]
         min_z = min(all_z) if all_z else 0.0
         fixed_nodes = set()
+        
+        # Read support config from JSON (default: Fixed)
+        support_config = data.get('support_config', {})
+        support_type = support_config.get('type', 'Fixed')
+        support_dof = support_config.get('dof', [1, 1, 1, 1, 1, 1])
 
         for nid, coords in node_coords.items():
             ops.node(nid, *coords)
@@ -1409,9 +1414,9 @@ def run_load_case(data, case_type, pattern_def=None):
                 "reaction": None
             }
             
-            # Tumpuan Jepit (Fixed)
+            # Tumpuan sesuai support_config
             if abs(coords[2] - min_z) < 100.0:
-                ops.fix(nid, 1, 1, 1, 1, 1, 1)
+                ops.fix(nid, *support_dof)
                 fixed_nodes.add(nid)
 
         # --- BUILD NODE-TO-CONNECTING-DEPTH MAP (for Rigid End Zones) ---
@@ -2357,11 +2362,15 @@ def run_seismic_analysis(data, direction='EQx'):
         min_z_val = min(all_z_vals) if all_z_vals else 0.0
         fixed_nodes = set()
         
+        # Read support config from JSON (default: Fixed)
+        support_config = data.get('support_config', {})
+        support_dof = support_config.get('dof', [1, 1, 1, 1, 1, 1])
+        
         for nid, coords in node_coords.items():
             ops.node(nid, *coords)
             res["nodes"][nid] = {"coords": coords, "disp": [0.0]*6, "reaction": None}
             if abs(coords[2] - min_z_val) < 100.0:
-                ops.fix(nid, 1, 1, 1, 1, 1, 1)
+                ops.fix(nid, *support_dof)
                 fixed_nodes.add(nid)
         
         # --- Rigid End Zones Depths ---
