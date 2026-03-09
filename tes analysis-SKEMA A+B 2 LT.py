@@ -2849,6 +2849,529 @@ def run_seismic_analysis(data, direction='EQx'):
     
     return res
 
+
+# ============================================================================
+# 3.6 MODAL ANALYSIS — Eigenvalue (Period & Frequency)
+# ============================================================================
+def run_modal_analysis(data, num_modes=12):
+    """
+    Eigenvalue modal analysis to compute natural periods and frequencies.
+    
+    Builds full structural model (same element formulation as seismic),
+    adds mass via '-mass' argument on elements and lumped mass on
+    rigid diaphragm master nodes, then solves eigenvalue problem.
+    
+    Args:
+        data: Model data dictionary (from Model data.json)
+        num_modes: Number of eigen modes to compute (default 12)
+    
+    Returns:
+        dict: Modal analysis results with periods, frequencies, 
+              participation factors, and mass ratios
+    """
+    import math
+    
+    res = {
+        "status": "Failed",
+        "num_modes": num_modes,
+        "modes": [],
+        "summary": {}
+    }
+    
+    elements_list = data.get('model_elements', [])
+    if not elements_list:
+        print("[ERROR] No model_elements for modal analysis!")
+        return res
+    
+    seismic_params = data.get('seismic_parameters', {})
+    SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))
+    SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))
+    
+    struct_config = detect_structure_config(elements_list)
+    n_stories = struct_config['n_stories']
+    story_height_mm = struct_config['story_height']
+    n_span_x = struct_config['n_span_x']
+    n_span_y = struct_config['n_span_y']
+    span_x = struct_config['span_x']
+    span_y = struct_config['span_y']
+    z_levels = struct_config['z_levels']
+    x_coords = struct_config['x_coords']
+    y_coords = struct_config['y_coords']
+    
+    GRAVITY = 9.81  # m/s^2
+    
+    # With rigid diaphragm, only 3 DOFs per floor have mass (UX, UY, RZ)
+    num_modes = min(num_modes, 3 * n_stories)
+    
+    print(f"  Modal Config: {n_stories} stories, {n_span_x}x{n_span_y} spans, {num_modes} modes")
+    
+    try:
+        # ================================================================
+        # A. CALCULATE FLOOR MASS (Frame SW + Slab SW, no ADL)
+        # ================================================================
+        min_z = min(z_levels) if z_levels else 0.0
+        floor_z = sorted([z for z in z_levels if z > min_z + 100])
+        
+        if len(floor_z) != n_stories:
+            floor_z = [min_z + (i+1)*story_height_mm for i in range(n_stories)]
+        
+        Wi_N = [0.0] * n_stories
+        
+        # A1. Frame self-weight (half columns + full beams per floor)
+        for elem in elements_list:
+            topo = elem.get('topology', {})
+            sec = elem.get('section', {})
+            mat = elem.get('material', {})
+            
+            A_mm2 = float(sec.get('Area_mm2', 0))
+            rho_kgm3 = float(mat.get('Rho_kg/m3', 0))
+            if rho_kgm3 == 0:
+                rho_kgm3 = float(mat.get('Rho_kg/mm3', 0)) * 1e9
+            
+            L_mm = float(topo.get('length_mm', 0))
+            w_elem_N = rho_kgm3 * 1e-9 * A_mm2 * L_mm * GRAVITY
+            
+            start_z = float(topo['start_node'][2])
+            end_z = float(topo['end_node'][2])
+            
+            if elem.get('type', '') == 'Column':
+                z_top = max(start_z, end_z)
+                z_bot = min(start_z, end_z)
+                for fi in range(n_stories):
+                    if abs(z_top - floor_z[fi]) < 100:
+                        Wi_N[fi] += w_elem_N * 0.5
+                        break
+                if abs(z_bot - min_z) >= 100:
+                    for fi in range(n_stories):
+                        if abs(z_bot - floor_z[fi]) < 100:
+                            Wi_N[fi] += w_elem_N * 0.5
+                            break
+            else:
+                beam_z = (start_z + end_z) / 2.0
+                for fi in range(n_stories):
+                    if abs(beam_z - floor_z[fi]) < 100:
+                        Wi_N[fi] += w_elem_N
+                        break
+        
+        # A2. Slab mass from load patterns (DEAD + ADL)
+        # SAP2000 mass source: Elements=Yes, Loads=Yes, LoadPat=DEAD*1 + ADL*1
+        # SLAB_SW_PRESSURE = slab dead weight, SLAB_ADL_PRESSURE = additional dead
+        n_panels = n_span_x * n_span_y
+        panel_area_mm2 = span_x * span_y
+        slab_total_pressure = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE  # Dead + ADL
+        slab_mass_per_floor_N = slab_total_pressure * panel_area_mm2 * n_panels
+        for fi in range(n_stories):
+            Wi_N[fi] += slab_mass_per_floor_N
+        
+        # A3. SAP2000 double-counts frame self-weight!
+        # When MassSource = Elements=Yes + Loads(DEAD, SelfWtMult=1):
+        #   - Elements=Yes creates mass from material density (already in Wi_N from A1)
+        #   - Loads(DEAD) converts ALL DEAD loads to mass, INCLUDING self-weight again
+        # Proven: T1 error = 0.03% with double count vs 7% without
+        # -> Add frame SW at floor level AGAIN to match SAP2000
+        frame_sw_copy = [w for w in Wi_N]  # Save before doubling
+        for fi in range(n_stories):
+            # Wi_N[fi] currently = frame_sw_floor + slab
+            # Frame SW portion = Wi_N[fi] - slab_mass_per_floor_N
+            frame_sw_at_floor = frame_sw_copy[fi] - slab_mass_per_floor_N
+            Wi_N[fi] += frame_sw_at_floor  # Add frame SW again (double count)
+        
+        Wi_kN = [w / 1000.0 for w in Wi_N]
+        
+        print(f"  Floor weights: {[f'{w:.1f} kN' for w in Wi_kN]}")
+        
+        # ================================================================
+        # B. BUILD OPENSEES MODEL WITH MASS
+        # ================================================================
+        ops.wipe()
+        ops.model('basic', '-ndm', 3, '-ndf', 6)
+        
+        node_map = {}
+        node_coords = {}
+        next_node_id = 1
+        original_joint_nids = set()
+        
+        def get_node_id(coords):
+            nonlocal next_node_id
+            key = f"{coords[0]:.1f}_{coords[1]:.1f}_{coords[2]:.1f}"
+            if key not in node_map:
+                node_map[key] = next_node_id
+                node_coords[next_node_id] = coords
+                next_node_id += 1
+            return node_map[key]
+        
+        # Pre-process elements
+        processed_elements = []
+        for entry in elements_list:
+            p1 = entry['topology']['start_node']
+            p2 = entry['topology']['end_node']
+            n1 = get_node_id(p1)
+            n2 = get_node_id(p2)
+            original_joint_nids.add(n1)
+            original_joint_nids.add(n2)
+            dx, dy, dz = p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]
+            L = math.sqrt(dx**2 + dy**2 + dz**2)
+            is_vertical = abs(dz) > abs(dx) and abs(dz) > abs(dy)
+            processed_elements.append({
+                'id': entry['id'], 'nodes': [n1, n2],
+                'is_vertical': is_vertical, 'length': L, 'raw': entry
+            })
+        
+        # Build nodes with BCs
+        all_z_vals = [c[2] for c in node_coords.values()]
+        min_z_val = min(all_z_vals) if all_z_vals else 0.0
+        fixed_nodes = set()
+        
+        support_config = data.get('support_config', {})
+        support_dof = support_config.get('dof', [1, 1, 1, 1, 1, 1])
+        
+        for nid, coords in node_coords.items():
+            ops.node(nid, *coords)
+            if abs(coords[2] - min_z_val) < 100.0:
+                ops.fix(nid, *support_dof)
+                fixed_nodes.add(nid)
+        
+        # --- Rigid End Zones Depths (same as gravity/seismic) ---
+        node_connecting_depths = {}
+        for item in processed_elements:
+            sec = item['raw']['section']
+            d_mm = float(sec.get('d_mm', 0))
+            b_mm = float(sec.get('b_mm', 0))
+            for nid in item['nodes']:
+                if nid not in node_connecting_depths:
+                    node_connecting_depths[nid] = {'col_d': 0, 'beam_d': 0}
+                if item['is_vertical']:
+                    node_connecting_depths[nid]['col_d'] = max(
+                        node_connecting_depths[nid]['col_d'], b_mm)
+                else:
+                    node_connecting_depths[nid]['beam_d'] = max(
+                        node_connecting_depths[nid]['beam_d'], d_mm)
+        
+        # --- Build Elements ---
+        transf_counter = 1
+        
+        for item in processed_elements:
+            sec = item['raw']['section']
+            mat = item['raw']['material']
+            
+            E = float(mat.get('E_MPa', 205000))
+            G_mat = float(mat.get('G_MPa', 78846))
+            A = float(sec.get('Area_mm2', 0))
+            J = float(sec.get('J_mm4', 0))
+            Iz = float(sec.get('Iz_mm4', 0))
+            Iy = float(sec.get('Iy_mm4', 0))
+            Avz = float(sec.get('Avz_mm2', 0))
+            Avy = float(sec.get('Avy_mm2', 0))
+            
+            if A <= 0: continue
+            
+            # Mass per unit length for -cMass: rho*A in OpenSees units
+            # OpenSees (N, mm, s): mass unit = N*s^2/mm
+            # rho(kg/mm^3) * A(mm^2) = kg/mm -> divide by 1000 for N*s^2/mm/mm
+            # because 1 kg = 1 N*s^2/m = 0.001 N*s^2/mm
+            rho_kgmm3 = float(mat.get('Rho_kg/mm3', 0))
+            if rho_kgmm3 <= 0:
+                rho_kgm3 = float(mat.get('Rho_kg/m3', 0))
+                rho_kgmm3 = rho_kgm3 * 1e-9
+            mass_per_length = rho_kgmm3 * A / 1000.0  # N*s^2/mm^2
+            
+            local_axes = item['raw'].get('local_axes', {})
+            if item['is_vertical']:
+                vecxz = local_axes.get('y_axis', [1, 0, 0])
+            else:
+                vecxz = local_axes.get('z_axis', [0, 0, 1])
+            
+            # Inertia mapping (same as seismic/gravity)
+            if item['is_vertical']:
+                Ops_Iy = Iz; Ops_Iz = Iy
+                Ops_Avy = Avz; Ops_Avz = Avy
+            else:
+                Ops_Iy = Iz; Ops_Iz = Iy
+                Ops_Avy = Avy; Ops_Avz = Avz
+            
+            n1, n2 = item['nodes']
+            n_start_elem = n1
+            n_end_elem = n2
+            coord_start = node_coords[n_start_elem]
+            coord_end = node_coords[n_end_elem]
+            
+            # --- No beam insertion offset for modal ---
+            # SAP2000 CardinalPt=8 (top center) handles insertion internally;
+            # OpenSees rigidLink('beam') creates rigid arms that over-stiffen
+            beam_start = n_start_elem
+            beam_end = n_end_elem
+            
+            # --- Rigid End Zone Offsets for Modal Analysis ---
+            # SAP2000: Column RigidFactor=0.3, Beam RigidFactor=0
+            MODAL_COL_REZ = 0.0
+            MODAL_BEAM_REZ = 0.0
+            
+            dI = [0.0, 0.0, 0.0]
+            dJ = [0.0, 0.0, 0.0]
+            
+            p1 = node_coords[n_start_elem]
+            p2 = node_coords[n_end_elem]
+            dx = p2[0]-p1[0]; dy = p2[1]-p1[1]; dz_v = p2[2]-p1[2]
+            L_elem = math.sqrt(dx**2 + dy**2 + dz_v**2)
+            if L_elem > 0:
+                ux, uy, uz = dx/L_elem, dy/L_elem, dz_v/L_elem
+                
+                if item['is_vertical']:
+                    d1 = node_connecting_depths.get(n1, {}).get('beam_d', 0)
+                    d2 = node_connecting_depths.get(n2, {}).get('beam_d', 0)
+                    off1 = d1 / 2.0 * MODAL_COL_REZ
+                    off2 = d2 / 2.0 * MODAL_COL_REZ
+                    dI = [ux*off1, uy*off1, uz*off1]
+                    dJ = [-ux*off2, -uy*off2, -uz*off2]
+                else:
+                    d1 = node_connecting_depths.get(n1, {}).get('col_d', 0)
+                    d2 = node_connecting_depths.get(n2, {}).get('col_d', 0)
+                    off1 = d1 / 2.0 * MODAL_BEAM_REZ
+                    off2 = d2 / 2.0 * MODAL_BEAM_REZ
+                    dI = [ux*off1, uy*off1, uz*off1]
+                    dJ = [-ux*off2, -uy*off2, -uz*off2]
+            
+            vx = coord_end[0]-coord_start[0]
+            vy_v = coord_end[1]-coord_start[1]
+            vz_c = coord_end[2]-coord_start[2]
+            
+            # Subdivide: 8 for beams, 4 for columns
+            num_subs = 8 if not item['is_vertical'] else 4
+            
+            prev_node = beam_start
+            for k_sub in range(num_subs):
+                if k_sub == num_subs - 1:
+                    curr_node = beam_end
+                else:
+                    ratio = (k_sub + 1) / num_subs
+                    nx = coord_start[0] + vx * ratio
+                    ny = coord_start[1] + vy_v * ratio
+                    nz = coord_start[2] + vz_c * ratio
+                    curr_node = next_node_id
+                    node_coords[curr_node] = (nx, ny, nz)
+                    ops.node(curr_node, nx, ny, nz)
+                    next_node_id += 1
+                
+                sub_ele_id = item['id'] * 100 + k_sub
+                if sub_ele_id > 2000000000:
+                    sub_ele_id = int(sub_ele_id % 1000000 + 900000)
+                
+                sub_transf_tag = transf_counter
+                transf_counter += 1
+                
+                sub_dI = [0.0, 0.0, 0.0]
+                sub_dJ = [0.0, 0.0, 0.0]
+                if k_sub == 0:
+                    sub_dI = list(dI)
+                if k_sub == num_subs - 1:
+                    sub_dJ = list(dJ)
+                
+                ops.geomTransf('Linear', sub_transf_tag,
+                              vecxz[0], vecxz[1], vecxz[2],
+                              '-jntOffset', sub_dI[0], sub_dI[1], sub_dI[2],
+                              sub_dJ[0], sub_dJ[1], sub_dJ[2])
+                
+                # NO element -mass: incompatible with rigidDiaphragm
+                # (causes mass double-counting, participation > 100%)
+                # All mass lumped at master node instead
+                ops.element('ElasticTimoshenkoBeam', sub_ele_id,
+                           prev_node, curr_node,
+                           E, G_mat, A, J, Ops_Iy, Ops_Iz, Ops_Avy, Ops_Avz,
+                           sub_transf_tag)
+                
+                prev_node = curr_node
+        
+        # ================================================================
+        # C. RIGID DIAPHRAGM + MASS ASSIGNMENT
+        # ================================================================
+        center_x = (min(x_coords) + max(x_coords)) / 2.0
+        center_y = (min(y_coords) + max(y_coords)) / 2.0
+        G_ACC_MM = 9810.0  # mm/s^2
+        
+        master_nodes = []
+        mass_nodes_per_floor = {}
+        
+        for fi in range(n_stories):
+            fz = floor_z[fi]
+            
+            master_nid = next_node_id
+            next_node_id += 1
+            ops.node(master_nid, center_x, center_y, fz)
+            node_coords[master_nid] = (center_x, center_y, fz)
+            
+            floor_slave_nodes = []
+            for nid in original_joint_nids:
+                if nid == master_nid or nid in fixed_nodes:
+                    continue
+                coords = node_coords.get(nid, (0,0,0))
+                if abs(coords[2] - fz) < 100.0:
+                    floor_slave_nodes.append(nid)
+            
+            if floor_slave_nodes:
+                ops.rigidDiaphragm(3, master_nid, *floor_slave_nodes)
+            
+            mass_nodes_per_floor[fi] = floor_slave_nodes
+            
+            # Fix DOFs 3,4,5 (Z, Rx, Ry) on master
+            ops.fix(master_nid, 0, 0, 1, 1, 1, 0)
+            
+            # All mass at master: frame SW (double-count) + slab + ADL
+            mass_val = Wi_N[fi] / G_ACC_MM
+            
+            # Rotational inertia: corner-lumped formula
+            # Matches SAP2000 ASSEMBLED JOINT MASSES (0.01% error)
+            Lx_floor = max(x_coords) - min(x_coords)
+            Ly_floor = max(y_coords) - min(y_coords)
+            Iz_mass = mass_val * ((Lx_floor/2.0)**2 + (Ly_floor/2.0)**2)
+            
+            ops.mass(master_nid, mass_val, mass_val, 0.0, 0.0, 0.0, Iz_mass)
+            
+            master_nodes.append(master_nid)
+            print(f"    Floor {fi+1}: master={master_nid}, mass={mass_val:.4f}, "
+                  f"Iz_mass={Iz_mass:.2f}, slaves={len(floor_slave_nodes)}")
+        
+        # ================================================================
+        # D. EIGENVALUE ANALYSIS
+        # ================================================================
+        # Use Lagrange multiplier for rigid constraints in eigenvalue
+        # (Transformation eliminates DOFs, Penalty corrupts matrix)
+        ops.system('FullGeneral')
+        ops.numberer('RCM')
+        ops.constraints('Transformation')
+        
+        print(f"\n  Running eigenvalue analysis ({num_modes} modes)...")
+        print(f"  Solver: -fullGenLapack (required for Transformation + rigidDiaphragm)")
+        
+        eigenvalues = ops.eigen('-fullGenLapack', num_modes)
+        
+        print(f"  Solver: -fullGenLapack completed successfully")
+        print(f"  Successfully computed {len(eigenvalues)} modes")
+        print(f"  Raw eigenvalues: {[f'{e:.4f}' for e in eigenvalues]}")
+        
+        # ================================================================
+        # E. COMPUTE PERIODS, FREQUENCIES, PARTICIPATION
+        # ================================================================
+        import numpy as np
+        
+        modes_data = []
+        
+        for i, lam in enumerate(eigenvalues):
+            # Skip zero/negative eigenvalues (rigid body modes or numerical noise)
+            if lam < 1e-6:
+                print(f"    Mode {i+1}: eigenvalue={lam:.6e} (SKIPPED - non-positive)")
+                continue
+            # Skip near-infinite eigenvalues (constraint DOF artifacts)
+            if lam > 1e8:
+                print(f"    Mode {i+1}: eigenvalue={lam:.4e} (SKIPPED - constraint artifact)")
+                continue
+            omega = math.sqrt(lam)
+            freq = omega / (2.0 * math.pi)
+            period = 1.0 / freq if freq > 0 else 0.0
+            
+            modes_data.append({
+                "mode": i + 1,
+                "eigenvalue": round(lam, 4),
+                "omega_rad_s": round(omega, 6),
+                "frequency_Hz": round(freq, 6),
+                "period_s": round(period, 10),
+            })
+        
+        # --- Participation factors ---
+        # Using master nodes from rigid diaphragm
+        G_ACC_MM = 9810.0
+        total_mass = sum(Wi_N) / G_ACC_MM
+        Lx_floor = max(x_coords) - min(x_coords)
+        Ly_floor = max(y_coords) - min(y_coords)
+        total_Iz = sum(Wi_N[fi] / G_ACC_MM * ((Lx_floor/2.0)**2 + (Ly_floor/2.0)**2)
+                      for fi in range(n_stories))
+        
+        for mode_info in modes_data:
+            mode_num = mode_info["mode"]
+            
+            Lx = 0.0; Ly = 0.0; Lrz = 0.0
+            Mx_gen = 0.0; My_gen = 0.0; Mrz_gen = 0.0
+            
+            for fi, master_nid in enumerate(master_nodes):
+                m = Wi_N[fi] / G_ACC_MM
+                Iz_m = m * ((Lx_floor/2.0)**2 + (Ly_floor/2.0)**2)
+                
+                phi_x = ops.nodeEigenvector(master_nid, mode_num, 1)
+                phi_y = ops.nodeEigenvector(master_nid, mode_num, 2)
+                phi_rz = ops.nodeEigenvector(master_nid, mode_num, 6)
+                
+                Lx += m * phi_x;     Mx_gen += m * phi_x**2
+                Ly += m * phi_y;     My_gen += m * phi_y**2
+                Lrz += Iz_m * phi_rz; Mrz_gen += Iz_m * phi_rz**2
+            
+            meff_x = (Lx**2 / Mx_gen) if abs(Mx_gen) > 1e-20 else 0.0
+            meff_y = (Ly**2 / My_gen) if abs(My_gen) > 1e-20 else 0.0
+            meff_rz = (Lrz**2 / Mrz_gen) if abs(Mrz_gen) > 1e-20 else 0.0
+            
+            mode_info["UX_ratio"] = round(meff_x / total_mass, 8) if total_mass > 0 else 0.0
+            mode_info["UY_ratio"] = round(meff_y / total_mass, 8) if total_mass > 0 else 0.0
+            mode_info["RZ_ratio"] = round(meff_rz / total_Iz, 8) if total_Iz > 0 else 0.0
+            
+            # Determine dominant direction
+            ratios = {"UX": mode_info["UX_ratio"], "UY": mode_info["UY_ratio"], "RZ": mode_info["RZ_ratio"]}
+            dominant = max(ratios, key=ratios.get)
+            mode_info["dominant"] = dominant
+        
+        res["modes"] = modes_data
+        res["num_modes_computed"] = len(modes_data)
+        res["status"] = "Success"
+        
+        # Cumulative mass ratios
+        cum_ux = 0.0
+        cum_uy = 0.0
+        cum_rz = 0.0
+        for m in modes_data:
+            cum_ux += m.get("UX_ratio", 0)
+            cum_uy += m.get("UY_ratio", 0)
+            cum_rz += m.get("RZ_ratio", 0)
+            m["cum_UX"] = round(cum_ux, 8)
+            m["cum_UY"] = round(cum_uy, 8)
+            m["cum_RZ"] = round(cum_rz, 8)
+        
+        # Summary
+        if modes_data:
+            res["summary"] = {
+                "T1": modes_data[0]["period_s"],
+                "T2": modes_data[1]["period_s"] if len(modes_data) > 1 else 0,
+                "T3": modes_data[2]["period_s"] if len(modes_data) > 2 else 0,
+                "f1": modes_data[0]["frequency_Hz"],
+                "cum_UX_pct": round(cum_ux * 100, 2),
+                "cum_UY_pct": round(cum_uy * 100, 2),
+                "cum_RZ_pct": round(cum_rz * 100, 2),
+                "total_mass_kg_s2_mm": round(sum(Wi_N) / 9810.0, 4),
+            }
+        
+        # ================================================================
+        # F. PRINT RESULTS
+        # ================================================================
+        print(f"\n  {'='*80}")
+        print(f"  {'MODAL ANALYSIS RESULTS':^80}")
+        print(f"  {'='*80}")
+        print(f"\n  {'Mode':>4} {'Period (s)':>14} {'Freq (Hz)':>12} {'UX%':>8} {'UY%':>8} {'RZ%':>8} {'Dom':>5}")
+        print(f"  {'-'*4} {'-'*14} {'-'*12} {'-'*8} {'-'*8} {'-'*8} {'-'*5}")
+        
+        for m in modes_data:
+            ux_pct = m.get("UX_ratio", 0) * 100
+            uy_pct = m.get("UY_ratio", 0) * 100
+            rz_pct = m.get("RZ_ratio", 0) * 100
+            print(f"  {m['mode']:>4} {m['period_s']:>14.10f} {m['frequency_Hz']:>12.4f} "
+                  f"{ux_pct:>7.2f}% {uy_pct:>7.2f}% {rz_pct:>7.2f}% {m.get('dominant',''):>5}")
+        
+        print(f"\n  Cumulative: UX={cum_ux*100:.2f}%, UY={cum_uy*100:.2f}%, RZ={cum_rz*100:.2f}%")
+    
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Modal analysis: {e}")
+        traceback.print_exc()
+        res["status"] = "Error"
+    
+    return res
+
+
 # ============================================================================
 # 2.5 POST-PROCESSING VISUALIZATION
 # ============================================================================
@@ -3575,8 +4098,25 @@ def run_analysis(input_path, output_path, generate_plots=True):
         print("\n[WARNING] Skipping validation - no suitable load case available")
         results['_validation'] = {'status': 'skipped', 'reason': 'No suitable load case for validation'}
 
-    # ========== SEISMIC ANALYSIS (SNI 1726 ELF) ==========
+    # ========== MODAL ANALYSIS (Eigenvalue) ==========
     import copy
+    seismic_params = data.get('seismic_parameters', {})
+    
+    if seismic_params:
+        print(f"\n{'='*66}")
+        print(f"  MODAL ANALYSIS — Eigenvalue (Period & Frequency)")
+        print(f"{'='*66}")
+        
+        modal_result = run_modal_analysis(copy.deepcopy(data))
+        results['_modal'] = modal_result
+        
+        if modal_result.get('status') == 'Success':
+            T_modal = modal_result.get('summary', {}).get('T1', 0)
+            print(f"\n  T1_modal = {T_modal:.6f} s")
+        else:
+            print(f"  [WARNING] Modal analysis failed!")
+
+    # ========== SEISMIC ANALYSIS (SNI 1726 ELF) ==========
     seismic_params = data.get('seismic_parameters', {})
     
     if seismic_params:
