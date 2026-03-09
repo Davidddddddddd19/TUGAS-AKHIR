@@ -42,9 +42,9 @@ MERGED_RESULT_PATH = os.path.join(os.path.dirname(OUTPUT_PATH), "Result.json")
 ANALYSIS_JSON_PATH = os.path.join(os.path.dirname(OUTPUT_PATH), "Analysis", "Analysis.json")
 
 # 3. Parameter Geometri & Beban
-N_STORY     = 2       
-BAY_X_COUNT = 2        
-BAY_Y_COUNT = 2        
+N_STORY     = 1       
+BAY_X_COUNT = 1        
+BAY_Y_COUNT = 1        
 SPAN_X_MM   = 4000   
 SPAN_Y_MM   = 4000    
 HEIGHT_MM   = 4000     
@@ -108,7 +108,7 @@ COL_RFA_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structur
 #   "Fixed"  = Jepit   (semua DOF restrained)
 #   "Pinned" = Sendi   (translasi restrained, rotasi free)
 #   "Roller" = Roller  (hanya Tz restrained)
-SUPPORT_TYPE = "Pinned"
+SUPPORT_TYPE = "Fixed"
 
 # DOF auto-resolver (internal, user tidak perlu ubah)
 _SUPPORT_DOF_MAP = {
@@ -183,8 +183,8 @@ LOAD_COMBO_MODE = "both"
 # Custom combinations: {"NamaKombo": {"NamaPattern": factor, ...}}
 # Pattern names harus match keys LOAD_PATTERNS atau "EQx"/"EQy"
 CUSTOM_LOAD_COMBOS = {
-    "COMB1": {"SelfWeight": 1.0, "ADL": 1.0, "LIVE": 1.0},
-    "COMB2": {"SelfWeight": 1.5, "ADL": 1.5, "LIVE": 1.5},
+    "COMB1": {"SelfWeight": 1.0, "ADL": 1.0,},
+    "COMB2": {"SelfWeight": 1.0, "ADL": 1.0, "LIVE": 1.0},
     # "COMB3": {"SelfWeight": 1.2, "ADL": 1.2, "LIVE": 0.5, "EQx": 1.3},
 }
 
@@ -3529,6 +3529,49 @@ if json_success:
                             else:
                                 out.print_md("❌ **Analisis Gagal**")
                                 out.print_md("**Pesan:** " + str(results.get("message", "Unknown Error")))
+                        # ===========================================================
+                        # MODAL ANALYSIS RESULTS (Period & Frequency)
+                        # ===========================================================
+                        modal_data = all_results.get('_modal')
+                        if modal_data and modal_data.get('status') == 'Success':
+                            out.print_md("---")
+                            out.print_md("## 🔔 MODAL - PERIODE DAN FREKUENSI")
+                            
+                            modes = modal_data.get('modes', [])
+                            summary = modal_data.get('summary', {})
+                            
+                            if modes:
+                                # SAP2000-style modal table
+                                mode_rows = []
+                                for m in modes:
+                                    mode_rows.append([
+                                        "MODAL",
+                                        "Mode",
+                                        str(m['mode']),
+                                        "{:.6f}".format(m.get('period_s', 0)),
+                                        "{:.6f}".format(m.get('frequency_Hz', 0)),
+                                        "{:.6f}".format(m.get('omega_rad_s', 0)),
+                                        "{:.6f}".format(m.get('eigenvalue', 0)),
+                                    ])
+                                
+                                print_center_table(
+                                    output=out,
+                                    data=mode_rows,
+                                    columns=[
+                                        "OutputCase",
+                                        "StepType",
+                                        "StepNum",
+                                        "Period (Sec)",
+                                        "Frequency (Cyc/sec)",
+                                        "CircFreq (rad/sec)",
+                                        "Eigenvalue (rad2/sec2)",
+                                    ],
+                                    title="Modal Periods And Frequencies"
+                                )
+                                
+                                # Summary
+                                out.print_md("**T1 = {:.6f} s** | **f1 = {:.4f} Hz**".format(
+                                    summary.get('T1', 0), summary.get('f1', 0)))
 
                         # ===========================================================
                         # SEISMIC ANALYSIS RESULTS (EQx & EQy)
