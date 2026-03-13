@@ -1092,7 +1092,13 @@ def run_load_case(data, case_type, pattern_def=None):
             # Intermediate
             for i in range(1, num_samples - 1):
                 ratio = i / (num_samples - 1)
-                forces_exact = get_exact_intermediate_forces(f_start, f_end, ratio, length_mm)
+                if is_vertical:
+                    # Columns: use direct eleForce interpolation.
+                    # get_exact_intermediate_forces() uses beam axis coupling (Fy→My, Fz→Mz)
+                    # which is wrong for columns where the coupling is reversed.
+                    forces_exact = get_internal_forces_at_station(elem_id, ratio, local_axes, is_vertical)
+                else:
+                    forces_exact = get_exact_intermediate_forces(f_start, f_end, ratio, length_mm)
                 sample_stations.append({"station": ratio, "forces": forces_exact})
             
             # Add End
@@ -1135,118 +1141,105 @@ def run_load_case(data, case_type, pattern_def=None):
 
         def get_deflection_at_station(elem_id, ratio, local_axes, node_coords_dict, start_node, end_node, length_mm, E, I_major, I_minor, A, G):
             """
-            Calculate deflection at any station along element using Timoshenko beam shape functions.
-            
-            For Timoshenko beam, deflection considers both bending and shear deformations.
-            Uses cubic Hermite interpolation enhanced with shear correction.
-            
+            Calculate ABSOLUTE local deflection at any station along element.
+
+            Uses Hermite cubic shape functions to interpolate the displacement
+            field from nodal displacements. Returns absolute deflection in
+            local coordinates (not chord-relative).
+
+            The chord subtraction (Relative to Beam Ends) is done in
+            get_max_deflection() using the FULL beam's end-to-end chord.
+
             Args:
-                elem_id: Element ID
-                ratio: Station ratio (0.0 to 1.0)
-                local_axes: Local coordinate system
+                elem_id: Element ID (or sub-element ID)
+                ratio: Station ratio (0.0 to 1.0) within this element/sub-element
+                local_axes: Local coordinate system of the parent beam
                 node_coords_dict: Dictionary of node coordinates
-                start_node, end_node: Node IDs
-                length_mm: Element length
+                start_node, end_node: Node IDs of this element/sub-element
+                length_mm: Length of this element/sub-element
                 E, I_major, I_minor, A, G: Section/material properties
-                
+
             Returns:
-                Dictionary with local deflections {delta_y, delta_z}
+                Dictionary with absolute local deflections {delta_y, delta_z}
             """
             # Get displacements at start and end nodes
             d_start = ops.nodeDisp(start_node)  # [dx, dy, dz, rx, ry, rz] global
             d_end = ops.nodeDisp(end_node)      # [dx, dy, dz, rx, ry, rz] global
-            
+
             # Extract translation and rotation components
-            u1 = [d_start[0], d_start[1], d_start[2]]  # Start translation (global)
-            u2 = [d_end[0], d_end[1], d_end[2]]        # End translation (global)
-            theta1 = [d_start[3], d_start[4], d_start[5]]  # Start rotation (global)
-            theta2 = [d_end[3], d_end[4], d_end[5]]        # End rotation (global)
-            
+            u1 = [d_start[0], d_start[1], d_start[2]]
+            u2 = [d_end[0], d_end[1], d_end[2]]
+            theta1 = [d_start[3], d_start[4], d_start[5]]
+            theta2 = [d_end[3], d_end[4], d_end[5]]
+
             # Transform to local coordinates
             x_axis = local_axes.get('x_axis', [1, 0, 0])
             y_axis = local_axes.get('y_axis', [0, 1, 0])
             z_axis = local_axes.get('z_axis', [0, 0, 1])
-            
-            # Rotation matrix (global to local)
+
             R = [
                 [x_axis[0], x_axis[1], x_axis[2]],
                 [y_axis[0], y_axis[1], y_axis[2]],
                 [z_axis[0], z_axis[1], z_axis[2]]
             ]
-            
+
             def transform_vec(v):
                 return [
                     R[0][0]*v[0] + R[0][1]*v[1] + R[0][2]*v[2],
                     R[1][0]*v[0] + R[1][1]*v[1] + R[1][2]*v[2],
                     R[2][0]*v[0] + R[2][1]*v[1] + R[2][2]*v[2]
                 ]
-            
+
             u1_local = transform_vec(u1)
             u2_local = transform_vec(u2)
             theta1_local = transform_vec(theta1)
             theta2_local = transform_vec(theta2)
-            
-            # Timoshenko beam shape functions for transverse deflection
-            # v(x) = N1*v1 + N2*theta1 + N3*v2 + N4*theta2
-            # Where N1, N2, N3, N4 are Hermite cubic shape functions with shear correction
-            
+
             L = length_mm
             xi = ratio  # 0 to 1
-            
-            # Standard Hermite shape functions (Euler-Bernoulli base)
+
+            # Standard Hermite cubic shape functions
             N1 = 1 - 3*xi**2 + 2*xi**3
             N2 = L * (xi - 2*xi**2 + xi**3)
             N3 = 3*xi**2 - 2*xi**3
             N4 = L * (-xi**2 + xi**3)
-            
-            # Timoshenko shear correction factor (phi = 12*E*I / (G*A_s*L^2))
-            # For simplicity, using approximate shear area A_s ≈ A * 0.85 for I-section
-            A_s = A * 0.85 if A > 0 else 1.0
-            
-            # Calculate phi for each direction
-            phi_y = 12 * E * I_major / (G * A_s * L**2) if (G * A_s * L**2) > 0 else 0
-            phi_z = 12 * E * I_minor / (G * A_s * L**2) if (G * A_s * L**2) > 0 else 0
-            
-            # Modified shape functions for Timoshenko beam (simplified)
-            # The effect of shear is typically small for slender beams
-            # For practical purposes, use Euler-Bernoulli with slight adjustment
-            shear_factor_y = 1 / (1 + phi_y) if phi_y < 10 else 0.1
-            shear_factor_z = 1 / (1 + phi_z) if phi_z < 10 else 0.1
-            
-            # Deflection in local Y direction (v1=u1_local[1], theta1=theta1_local[2] for rotation about Z)
-            # For beam: Y is transverse (vertical), rotation about Z causes Y deflection
+
+            # --- Absolute local Y deflection (rotation about local Z) ---
             v1_y = u1_local[1]
             v2_y = u2_local[1]
-            theta1_z = theta1_local[2]  # Rotation about local Z
+            theta1_z = theta1_local[2]
             theta2_z = theta2_local[2]
-            
-            delta_y = (N1 * v1_y + N2 * theta1_z + N3 * v2_y + N4 * theta2_z) * shear_factor_y
-            
-            # Deflection in local Z direction (w1=u1_local[2], theta1=theta1_local[1] for rotation about Y)
+            delta_y = N1 * v1_y + N2 * theta1_z + N3 * v2_y + N4 * theta2_z
+
+            # --- Absolute local Z deflection (rotation about local Y) ---
             v1_z = u1_local[2]
             v2_z = u2_local[2]
-            theta1_y = -theta1_local[1]  # Rotation about local Y (sign convention)
+            theta1_y = -theta1_local[1]  # Sign convention
             theta2_y = -theta2_local[1]
-            
-            delta_z = (N1 * v1_z + N2 * theta1_y + N3 * v2_z + N4 * theta2_y) * shear_factor_z
-            
+            delta_z = N1 * v1_z + N2 * theta1_y + N3 * v2_z + N4 * theta2_y
+
             return {"delta_y": delta_y, "delta_z": delta_z}
 
         def get_max_deflection(item, node_coords_dict, sub_elements_map):
             """
-            Calculate maximum deflection for an element with 9-point sampling.
-            Uses Timoshenko beam shape functions for interpolation.
-            
+            Calculate maximum chord-relative deflection using virtual work
+            (bending-only / Euler-Bernoulli) method.
+
+            This matches SAP2000's 'Relative to Beam Ends' element deflection
+            output, which uses bending-only interpolation from internal forces
+            (no shear deformation contribution).
+
+            Formula:
+              delta_z(s) = -integral_0^L My(x)*m_s(x)/(E*I_major) dx
+              delta_y(s) = +integral_0^L Mz(x)*m_s(x)/(E*I_minor) dx
+
+            where m_s(x) is the virtual moment for unit load at station s
+            on a simply-supported beam:
+              m_s(x) = (L-s)*x/L   for 0 <= x <= s
+              m_s(x) = s*(L-x)/L   for s < x <= L
+
             Returns:
-                Dictionary with max deflection info:
-                {
-                    "delta_y_max_mm": signed max deflection in local Y,
-                    "delta_y_station": station ratio where max occurs,
-                    "delta_y_distance_mm": distance where max occurs,
-                    "delta_z_max_mm": signed max deflection in local Z,
-                    "delta_z_station": station ratio where max occurs,
-                    "delta_z_distance_mm": distance where max occurs
-                }
+                Dictionary with max deflection info
             """
             eid = item['id']
             raw = item['raw']
@@ -1254,97 +1247,236 @@ def run_load_case(data, case_type, pattern_def=None):
             length_mm = raw.get('topology', {}).get('length_mm', 0)
             sec = raw.get('section', {})
             mat = raw.get('material', {})
-            
-            # Material properties
+            is_vertical = item.get('is_vertical', False)
+
             E = float(mat.get('E_MPa', 205000))
-            G = float(mat.get('G_MPa', 80000))
-            
-            # Section properties
-            A = float(sec.get('Area_mm2', 0))
-            I_major = float(sec.get('Iz_mm4', 0))  # Strong axis (Iz)
-            I_minor = float(sec.get('Iy_mm4', 0))  # Weak axis (Iy)
-            
+            I_major = float(sec.get('Iz_mm4', 0))  # Strong axis
+            I_minor = float(sec.get('Iy_mm4', 0))  # Weak axis
+
             if length_mm <= 0:
                 return None
-            
+
+            L = length_mm
             subs = sub_elements_map.get(eid)
-            # Get nodes for this element
-            # 9-point sampling (every 0.125)
-            sample_ratios = [i * 0.125 for i in range(9)]  # 0, 0.125, 0.25, ..., 1.0
-            
-            deflection_samples = []
-            
-            if not subs:
-                # Single element - use original nodes
-                n1, n2 = item['nodes']
-                for ratio in sample_ratios:
-                    defl = get_deflection_at_station(
-                        eid, ratio, local_axes, node_coords_dict, n1, n2,
-                        length_mm, E, I_major, I_minor, A, G
-                    )
-                    deflection_samples.append({
-                        "station": ratio,
-                        "distance_mm": ratio * length_mm,
-                        "delta_y": defl["delta_y"],
-                        "delta_z": defl["delta_z"]
-                    })
+
+            # --- Extract moment diagram (SAP2000 sign convention) ---
+            # My_sap: major moment (positive = sagging for beams)
+            # Mz_sap: minor moment
+            moment_data = []  # [(x_position, My_sap, Mz_sap), ...]
+
+            if subs and len(subs) > 1:
+                # BEAM with sub-elements: extract from eleForce at boundaries
+                x_ax = local_axes.get('x_axis', [1.0, 0.0, 0.0])
+                x_ax_x = float(x_ax[0])
+                x_ax_y = float(x_ax[1])
+                sa_x = -x_ax_y   # strong-axis unit vector
+                sa_y =  x_ax_x
+
+                cumulative_dist = 0.0
+                for i, (sub_eid, sub_len) in enumerate(subs):
+                    forces_raw = ops.eleForce(sub_eid)
+                    if i == 0:
+                        # i-node of first sub-element (SAP convention)
+                        My_sap_i = sa_x * forces_raw[3] + sa_y * forces_raw[4]
+                        Mz_sap_i = forces_raw[5]
+                        moment_data.append((0.0, My_sap_i, Mz_sap_i))
+
+                    # j-node of each sub-element
+                    j_dist = cumulative_dist + sub_len
+                    My_sap_j = -(sa_x * forces_raw[9] + sa_y * forces_raw[10])
+                    Mz_sap_j = -forces_raw[11]
+                    moment_data.append((j_dist, My_sap_j, Mz_sap_j))
+
+                    cumulative_dist += sub_len
             else:
-                # Multiple sub-elements - sample across all
-                cumulative_len = 0.0
-                total_len = length_mm
-                
-                for ratio in sample_ratios:
-                    target_dist = ratio * total_len
-                    
-                    # Find which sub-element contains this point
-                    cum = 0.0
-                    for i, (sub_eid, sub_len) in enumerate(subs):
-                        if cum <= target_dist <= cum + sub_len + 1e-6:
-                            # Found the segment
-                            local_ratio = (target_dist - cum) / sub_len if sub_len > 0 else 0
-                            local_ratio = max(0.0, min(1.0, local_ratio))  # Clamp
-                            
-                            # Get nodes for this sub-element
-                            try:
-                                nodes = ops.eleNodes(sub_eid)
-                                n1, n2 = nodes[0], nodes[1]
-                                
-                                defl = get_deflection_at_station(
-                                    sub_eid, local_ratio, local_axes, node_coords_dict,
-                                    n1, n2, sub_len, E, I_major, I_minor, A, G
-                                )
-                                deflection_samples.append({
-                                    "station": ratio,
-                                    "distance_mm": target_dist,
-                                    "delta_y": defl["delta_y"],
-                                    "delta_z": defl["delta_z"]
-                                })
-                            except:
-                                pass
-                            break
-                        cum += sub_len
-            
+                # COLUMN (single element) or beam without sub-elements
+                # Use get_internal_forces_at_station for reliable axis mapping
+                n_pts = 21
+                for k in range(n_pts):
+                    ratio = k / (n_pts - 1)
+                    forces = get_internal_forces_at_station(eid, ratio, local_axes, is_vertical)
+                    My_sap = -forces["My"]  # SAP sign convention
+                    Mz_sap = forces["Mz"]
+                    moment_data.append((ratio * L, My_sap, Mz_sap))
+
+            # --- Virtual work integration at 9 sample stations ---
+            sample_ratios = [i * 0.125 for i in range(9)]  # 0, 0.125, ..., 1.0
+
+            deflection_samples = []
+            for s_ratio in sample_ratios:
+                s = s_ratio * L
+
+                # Trapezoidal integration of M(x)*m_s(x)/(EI)
+                integral_major = 0.0
+                integral_minor = 0.0
+
+                for k in range(len(moment_data) - 1):
+                    x1, My1, Mz1 = moment_data[k]
+                    x2, My2, Mz2 = moment_data[k + 1]
+                    dx = x2 - x1
+                    if dx <= 0:
+                        continue
+
+                    # Virtual moment at x1 and x2
+                    if x1 <= s:
+                        ms1 = (L - s) * x1 / L if L > 0 else 0.0
+                    else:
+                        ms1 = s * (L - x1) / L if L > 0 else 0.0
+
+                    if x2 <= s + 1e-9:
+                        ms2 = (L - s) * x2 / L if L > 0 else 0.0
+                    else:
+                        ms2 = s * (L - x2) / L if L > 0 else 0.0
+
+                    # Trapezoidal rule
+                    integral_major += 0.5 * (My1 * ms1 + My2 * ms2) * dx
+                    integral_minor += 0.5 * (Mz1 * ms1 + Mz2 * ms2) * dx
+
+                # Bending-only deflection (chord-relative)
+                delta_z = -integral_major / (E * I_major) if I_major > 0 else 0.0
+                delta_y =  integral_minor / (E * I_minor) if I_minor > 0 else 0.0
+
+                deflection_samples.append({
+                    "station": s_ratio,
+                    "distance_mm": s,
+                    "delta_y": delta_y,
+                    "delta_z": delta_z
+                })
+
             if not deflection_samples:
                 return None
-            
-            # Find max absolute deflection (but keep sign)
+
             max_y_sample = max(deflection_samples, key=lambda x: abs(x["delta_y"]))
             max_z_sample = max(deflection_samples, key=lambda x: abs(x["delta_z"]))
-            
+
             return {
-                "delta_y_max_mm": round(max_y_sample["delta_y"], 4),
+                "delta_y_max_mm": round(max_y_sample["delta_y"], 10),
                 "delta_y_station": round(max_y_sample["station"], 4),
                 "delta_y_distance_mm": round(max_y_sample["distance_mm"], 2),
-                "delta_z_max_mm": round(max_z_sample["delta_z"], 4),
+                "delta_z_max_mm": round(max_z_sample["delta_z"], 10),
                 "delta_z_station": round(max_z_sample["station"], 4),
                 "delta_z_distance_mm": round(max_z_sample["distance_mm"], 2)
             }
 
 
+        def get_deflection_profile(item, node_coords_dict, sub_elements_map, n_stations=11):
+            """
+            Hitung profil defleksi station-by-station untuk Visualizer.
+            Uses virtual work (bending-only) method consistent with get_max_deflection.
+
+            Args:
+                item              : element item dict (id, raw, nodes, is_vertical)
+                node_coords_dict  : mapping node_id → [x,y,z]
+                sub_elements_map  : mapping elem_id → [(sub_eid, sub_len), ...]
+                n_stations        : jumlah titik sampling (default 11 → 0.0 s.d. 1.0)
+
+            Returns:
+                dict {
+                    "stations_ratio": [...],
+                    "dy_mm": [...],   # defleksi lokal Y (minor axis)
+                    "dz_mm": [...]    # defleksi lokal Z (major axis)
+                } atau None jika gagal
+            """
+            eid = item['id']
+            raw = item['raw']
+            local_axes = raw.get('local_axes', {})
+            length_mm = raw.get('topology', {}).get('length_mm', 0)
+            sec = raw.get('section', {})
+            mat = raw.get('material', {})
+            is_vertical = item.get('is_vertical', False)
+
+            E = float(mat.get('E_MPa', 205000))
+            I_major = float(sec.get('Iz_mm4', 0))
+            I_minor = float(sec.get('Iy_mm4', 0))
+
+            if length_mm <= 0:
+                return None
+
+            L = length_mm
+            sample_ratios = [i / float(n_stations - 1) for i in range(n_stations)]
+            subs = sub_elements_map.get(eid)
+
+            # --- Extract moment diagram (SAP2000 sign convention) ---
+            moment_data = []
+            if subs and len(subs) > 1:
+                x_ax = local_axes.get('x_axis', [1.0, 0.0, 0.0])
+                x_ax_x = float(x_ax[0])
+                x_ax_y = float(x_ax[1])
+                sa_x = -x_ax_y
+                sa_y =  x_ax_x
+
+                cumulative_dist = 0.0
+                for i, (sub_eid, sub_len) in enumerate(subs):
+                    forces_raw = ops.eleForce(sub_eid)
+                    if i == 0:
+                        My_sap_i = sa_x * forces_raw[3] + sa_y * forces_raw[4]
+                        Mz_sap_i = forces_raw[5]
+                        moment_data.append((0.0, My_sap_i, Mz_sap_i))
+
+                    j_dist = cumulative_dist + sub_len
+                    My_sap_j = -(sa_x * forces_raw[9] + sa_y * forces_raw[10])
+                    Mz_sap_j = -forces_raw[11]
+                    moment_data.append((j_dist, My_sap_j, Mz_sap_j))
+                    cumulative_dist += sub_len
+            else:
+                n_pts = 21
+                for k in range(n_pts):
+                    ratio_k = k / (n_pts - 1)
+                    forces = get_internal_forces_at_station(eid, ratio_k, local_axes, is_vertical)
+                    My_sap = -forces["My"]
+                    Mz_sap = forces["Mz"]
+                    moment_data.append((ratio_k * L, My_sap, Mz_sap))
+
+            # --- Virtual work at each profile station ---
+            stations_ratio = []
+            dy_mm = []
+            dz_mm = []
+
+            for s_ratio in sample_ratios:
+                s = s_ratio * L
+                integral_major = 0.0
+                integral_minor = 0.0
+
+                for k in range(len(moment_data) - 1):
+                    x1, My1, Mz1 = moment_data[k]
+                    x2, My2, Mz2 = moment_data[k + 1]
+                    dx = x2 - x1
+                    if dx <= 0:
+                        continue
+
+                    if x1 <= s:
+                        ms1 = (L - s) * x1 / L if L > 0 else 0.0
+                    else:
+                        ms1 = s * (L - x1) / L if L > 0 else 0.0
+
+                    if x2 <= s + 1e-9:
+                        ms2 = (L - s) * x2 / L if L > 0 else 0.0
+                    else:
+                        ms2 = s * (L - x2) / L if L > 0 else 0.0
+
+                    integral_major += 0.5 * (My1 * ms1 + My2 * ms2) * dx
+                    integral_minor += 0.5 * (Mz1 * ms1 + Mz2 * ms2) * dx
+
+                delta_z = -integral_major / (E * I_major) if I_major > 0 else 0.0
+                delta_y =  integral_minor / (E * I_minor) if I_minor > 0 else 0.0
+
+                stations_ratio.append(round(s_ratio, 4))
+                dy_mm.append(round(delta_y, 10))
+                dz_mm.append(round(delta_z, 10))
+
+            if not stations_ratio:
+                return None
+
+            return {
+                "stations_ratio": stations_ratio,
+                "dy_mm": dy_mm,
+                "dz_mm": dz_mm
+            }
+
         # --- RESET MODEL ---
         ops.wipe()
         ops.model('basic', '-ndm', 3, '-ndf', 6)
-        
+
         # --- NODE MAPPING ---
         node_map = {}       
         node_coords = {}    
@@ -1672,7 +1804,7 @@ def run_load_case(data, case_type, pattern_def=None):
                 vy = beam_coord_end[1] - beam_coord_start[1]
                 vz = beam_coord_end[2] - beam_coord_start[2]
                 
-                num_subs = 20  # Match opensees_validate.py
+                num_subs = 24  # Multiple of 8 so SAP2000 stations (L/8) align
                 sub_ids = []
                 
                 prev_node = beam_n_start
@@ -1919,7 +2051,7 @@ def run_load_case(data, case_type, pattern_def=None):
                     total_rz += reac[2]
                
                 d = ops.nodeDisp(nid)
-                res["nodes"][nid]["disp"] = [round(v, 4) for v in d]
+                res["nodes"][nid]["disp"] = [round(v, 10) for v in d]
             
             res["summary"]["total_reaction_z"] = round(total_rz, 2)
             
@@ -1989,25 +2121,42 @@ def run_load_case(data, case_type, pattern_def=None):
                           is_vert = item.get('is_vertical', False)
                           stations_output = []
                           cumulative_dist = 0.0
-                          
+
+                          # eleForce returns forces in GLOBAL coordinates.
+                          # For a beam running in direction x_axis, the local forces are:
+                          #   P_local  = dot(x_axis, F_global_trans)
+                          #   My_local = dot(strong_axis, M_global) where strong_axis = Z x x_axis
+                          #   T_local  = dot(x_axis, M_global)
+                          # strong_axis (horiz. axis perp. to beam) = [-x_ax_y, x_ax_x, 0]
+                          x_ax = local_axes.get('x_axis', [1.0, 0.0, 0.0])
+                          x_ax_x = float(x_ax[0])
+                          x_ax_y = float(x_ax[1])
+                          sa_x = -x_ax_y   # strong-axis unit vector X-component
+                          sa_y =  x_ax_x   # strong-axis unit vector Y-component
+
                           for i, (sub_eid, sub_len) in enumerate(subs):
-                                # Get raw forces from OpenSees (12-component array)
+                                # Get raw forces from OpenSees (12-component array, global coords)
                                 forces_raw = ops.eleForce(sub_eid)
-                                
+
                                 # For FIRST sub-element, include i-node (station 0)
                                 if i == 0:
-                                    # Extract i-node forces (indices 0-5)
-                                    # BEAM mapping (Revit default vecxz=[0,0,1]):
-                                    # Fy=1(minor/horiz), Fz=2(major/vert), My=4(minor), Mz=5(major)
+                                    # Transform global → beam-local using beam direction x_axis
+                                    # P: axial along beam axis
+                                    # Fy: minor shear (horiz. perp. to beam) = minor_axis · F_trans
+                                    #     minor_axis = (x_ax_y, -x_ax_x, 0)
+                                    # Fz: vertical shear (global Z, same in both systems)
+                                    # T: torsion about beam axis = x_axis · M_global
+                                    # My: strong-axis moment = strong_axis · M_global
+                                    # Mz: weak-axis moment (about Z, same in both systems)
                                     i_forces = {
-                                        "P": -forces_raw[0],
-                                        "Fy": -forces_raw[1],   # Minor shear (horizontal)
-                                        "Fz": -forces_raw[2],   # Major shear (vertical)
-                                        "T": -forces_raw[3],
-                                        "My": -forces_raw[4],   # Minor moment
-                                        "Mz": forces_raw[5]     # Major moment
+                                        "P":  -(x_ax_x * forces_raw[0] + x_ax_y * forces_raw[1]),
+                                        "Fy":   x_ax_y * forces_raw[0] - x_ax_x * forces_raw[1],
+                                        "Fz":  -forces_raw[2],
+                                        "T":  -(x_ax_x * forces_raw[3] + x_ax_y * forces_raw[4]),
+                                        "My": -(sa_x   * forces_raw[3] + sa_y   * forces_raw[4]),
+                                        "Mz":   forces_raw[5]
                                     }
-                                    
+
                                     stations_output.append({
                                         "station": 0.0,
                                         "distance_mm": 0.0,
@@ -2018,21 +2167,21 @@ def run_load_case(data, case_type, pattern_def=None):
                                         "My": round(-i_forces["My"], 2),
                                         "Mz": round(i_forces["Mz"], 2)
                                     })
-                                
+
                                 # Always include j-node (end of this sub-element)
                                 # Extract j-node forces (indices 6-11)
                                 j_dist = cumulative_dist + sub_len
                                 global_ratio = j_dist / element_length_total if element_length_total > 0 else 0
-                                
+
                                 j_forces = {
-                                    "P": forces_raw[6],
-                                    "Fy": forces_raw[7],    # Minor shear (horizontal)
-                                    "Fz": forces_raw[8],    # Major shear (vertical)
-                                    "T": forces_raw[9],
-                                    "My": forces_raw[10],   # Minor moment
-                                    "Mz": -forces_raw[11]   # Major moment
+                                    "P":   x_ax_x * forces_raw[6] + x_ax_y * forces_raw[7],
+                                    "Fy":  x_ax_y * forces_raw[6] - x_ax_x * forces_raw[7],
+                                    "Fz":  forces_raw[8],
+                                    "T":   x_ax_x * forces_raw[9] + x_ax_y * forces_raw[10],
+                                    "My":  sa_x   * forces_raw[9] + sa_y   * forces_raw[10],
+                                    "Mz": -forces_raw[11]
                                 }
-                                
+
                                 stations_output.append({
                                     "station": round(global_ratio, 4),
                                     "distance_mm": round(j_dist, 2),
@@ -2046,14 +2195,16 @@ def run_load_case(data, case_type, pattern_def=None):
                                 
                                 cumulative_dist += sub_len
                           
-                          # Calculate max deflection for this element
+                          # Calculate max deflection + station-by-station profile
                           max_defl = get_max_deflection(item, node_coords, sub_elements_map)
-                          
+                          defl_profile = get_deflection_profile(item, node_coords, sub_elements_map)
+
                           res["elements"][eid] = {
                                "element_type": "Column" if item['is_vertical'] else "Beam",
                                "applied_load": item.get('applied_load', ''),
                                "element_length_mm": element_length_total,
                                "max_deflection": max_defl,
+                               "deflection_profile": defl_profile,
                                "stations": stations_output
                             }
                 except Exception:
@@ -2851,6 +3002,128 @@ def run_seismic_analysis(data, direction='EQx'):
 
 
 # ============================================================================
+# 3.5.1 SHELL PLATE MESH HELPER
+# ============================================================================
+def _create_shell_plate_mesh(ops, floor_z_list, x_grid, y_grid, span_x, span_y,
+                              n_span_x, n_span_y, slab_plate_config,
+                              existing_node_coords, next_node_id, next_elem_id):
+    """
+    Create ShellDKGQ shell plate mesh on each floor.
+    
+    Args:
+        ops: openseespy.opensees module
+        floor_z_list: list of floor Z coordinates
+        x_grid, y_grid: grid coordinates [x0, x1, ...], [y0, y1, ...]
+        span_x, span_y: bay dimensions (mm)
+        n_span_x, n_span_y: number of bays
+        slab_plate_config: dict with E_MPa, nu, rho_kg_m3, thickness_mm, mesh_size_mm
+        existing_node_coords: dict {nid: (x, y, z)} of existing nodes
+        next_node_id: starting node ID for new nodes
+        next_elem_id: starting element ID for new elements
+    
+    Returns:
+        shell_floor_nodes: dict {floor_idx: [node_ids]}  — all shell nodes per floor
+        next_node_id, next_elem_id: updated counters
+    """
+    import math
+    
+    E_plate = float(slab_plate_config.get('E_MPa', 24855.6))
+    nu = float(slab_plate_config.get('nu', 0.2))
+    thickness = float(slab_plate_config.get('thickness_mm', 150.0))
+    rho_kg_m3 = float(slab_plate_config.get('rho_kg_m3', 2402.77))
+    mesh_size = float(slab_plate_config.get('mesh_size_mm', 250.0))
+    
+    # Convert density to OpenSees units (N, mm, s)
+    # rho_opensees = rho_kg_m3 * 1e-9 (kg/mm3) / 1000 -> NO
+    # For shell: rho is mass density = kg/m3 -> convert to N*s^2/mm^4
+    # 1 kg = 0.001 N*s^2/mm, so rho = rho_kg_m3 * 1e-9 * 0.001 = rho_kg_m3 * 1e-12
+    # But OpenSees ElasticMembranePlateSection expects rho in mass/volume
+    # In (N, mm, s): mass unit = N*s^2/mm, volume = mm^3
+    # rho = rho_kg_m3 * 1e-9 / 1000.0 = rho_kg_m3 * 1e-12 N*s^2/mm^4
+    rho_opensees = rho_kg_m3 * 1e-12  # N*s^2/mm^4
+    
+    # Create shell section
+    shell_sec_tag = 9999  # unique section tag
+    ops.section('ElasticMembranePlateSection', shell_sec_tag,
+                E_plate, nu, thickness, rho_opensees)
+    
+    # Calculate mesh divisions per bay
+    n_div_x = max(1, int(round(span_x / mesh_size)))
+    n_div_y = max(1, int(round(span_y / mesh_size)))
+    
+    print(f"  Shell plate mesh: {n_div_x}x{n_div_y} per bay "
+          f"(mesh_size={mesh_size:.0f}mm, elem_size={span_x/n_div_x:.0f}x{span_y/n_div_y:.0f}mm)")
+    print(f"  Shell section: E={E_plate:.1f} MPa, nu={nu}, t={thickness:.0f}mm, "
+          f"rho={rho_kg_m3:.2f} kg/m3")
+    
+    # Build reverse lookup: (x, y, z) -> node_id (tolerance-based)
+    tol = 1.0  # mm
+    def find_existing_node(x, y, z):
+        for nid, (nx, ny, nz) in existing_node_coords.items():
+            if abs(nx - x) < tol and abs(ny - y) < tol and abs(nz - z) < tol:
+                return nid
+        return None
+    
+    shell_floor_nodes = {}
+    
+    dx = span_x / n_div_x
+    dy = span_y / n_div_y
+    
+    total_shell_elems = 0
+    total_new_nodes = 0
+    
+    for fi, fz in enumerate(floor_z_list):
+        floor_nodes = []
+        # Per-floor node map: (global_ix, global_iy) -> node_id
+        node_map = {}
+        
+        # Total grid points across ALL bays on this floor
+        total_pts_x = n_span_x * n_div_x + 1
+        total_pts_y = n_span_y * n_div_y + 1
+        
+        # Create/find nodes
+        for gy in range(total_pts_y):
+            for gx in range(total_pts_x):
+                x = x_grid[0] + gx * dx
+                y = y_grid[0] + gy * dy
+                
+                # Try to find existing beam/column node at this position
+                existing_nid = find_existing_node(x, y, fz)
+                
+                if existing_nid is not None:
+                    node_map[(gx, gy)] = existing_nid
+                    floor_nodes.append(existing_nid)
+                else:
+                    # Create new interior node
+                    ops.node(next_node_id, x, y, fz)
+                    existing_node_coords[next_node_id] = (x, y, fz)
+                    node_map[(gx, gy)] = next_node_id
+                    floor_nodes.append(next_node_id)
+                    next_node_id += 1
+                    total_new_nodes += 1
+        
+        # Create ShellMITC4 elements
+        for gy in range(total_pts_y - 1):
+            for gx in range(total_pts_x - 1):
+                n1 = node_map[(gx, gy)]
+                n2 = node_map[(gx + 1, gy)]
+                n3 = node_map[(gx + 1, gy + 1)]
+                n4 = node_map[(gx, gy + 1)]
+                
+                ops.element('ShellMITC4', next_elem_id, n1, n2, n3, n4, shell_sec_tag)
+                next_elem_id += 1
+                total_shell_elems += 1
+        
+        shell_floor_nodes[fi] = floor_nodes
+    
+    n_floors = len(floor_z_list)
+    print(f"  Total: {total_new_nodes} new nodes, {total_shell_elems} shell elements "
+          f"({total_shell_elems // n_floors} per floor)")
+    
+    return shell_floor_nodes, next_node_id, next_elem_id
+
+
+# ============================================================================
 # 3.6 MODAL ANALYSIS — Eigenvalue (Period & Frequency)
 # ============================================================================
 def run_modal_analysis(data, num_modes=12):
@@ -2887,6 +3160,10 @@ def run_modal_analysis(data, num_modes=12):
     SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))
     SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))
     
+    # Shell plate configuration
+    slab_plate = data.get('slab_plate', {})
+    plate_enabled = slab_plate.get('enabled', False)
+    
     struct_config = detect_structure_config(elements_list)
     n_stories = struct_config['n_stories']
     story_height_mm = struct_config['story_height']
@@ -2900,8 +3177,10 @@ def run_modal_analysis(data, num_modes=12):
     
     GRAVITY = 9.81  # m/s^2
     
-    # With rigid diaphragm, only 3 DOFs per floor have mass (UX, UY, RZ)
-    num_modes = min(num_modes, 3 * n_stories)
+    # Plate mode: rigid diaphragm limits to 3 DOFs per floor
+    # Legacy mode: no diaphragm, keep requested num_modes (SAP2000 uses 12)
+    if plate_enabled:
+        num_modes = min(num_modes, 3 * n_stories)
     
     print(f"  Modal Config: {n_stories} stories, {n_span_x}x{n_span_y} spans, {num_modes} modes")
     
@@ -2958,15 +3237,29 @@ def run_modal_analysis(data, num_modes=12):
         # SLAB_SW_PRESSURE = slab dead weight, SLAB_ADL_PRESSURE = additional dead
         n_panels = n_span_x * n_span_y
         panel_area_mm2 = span_x * span_y
-        slab_total_pressure = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE  # Dead + ADL
-        slab_mass_per_floor_N = slab_total_pressure * panel_area_mm2 * n_panels
-        for fi in range(n_stories):
-            Wi_N[fi] += slab_mass_per_floor_N
         
-        # A3. SAP2000 double-counts frame self-weight!
+        if plate_enabled:
+            # Shell plate mode: shell density handles slab SW automatically
+            # But Wi_N still needs slab weight for participation factor calc
+            # Compute shell SW force from density × thickness × area × g
+            slab_plate_rho = float(slab_plate.get('rho_kg_m3', 7156.44))
+            slab_plate_t = float(slab_plate.get('thickness_mm', 150.0))
+            shell_sw_force_N = slab_plate_rho * 1e-9 * slab_plate_t * panel_area_mm2 * n_panels * GRAVITY
+            slab_adl_force_N = SLAB_ADL_PRESSURE * panel_area_mm2 * n_panels
+            slab_mass_per_floor_N = shell_sw_force_N + slab_adl_force_N
+            for fi in range(n_stories):
+                Wi_N[fi] += slab_mass_per_floor_N
+        else:
+            slab_total_pressure = SLAB_SW_PRESSURE + SLAB_ADL_PRESSURE  # Dead + ADL
+            slab_mass_per_floor_N = slab_total_pressure * panel_area_mm2 * n_panels
+            for fi in range(n_stories):
+                Wi_N[fi] += slab_mass_per_floor_N
+        
+        # A3. SAP2000 double-counts ALL element self-weight!
         # When MassSource = Elements=Yes + Loads(DEAD, SelfWtMult=1):
         #   - Elements=Yes creates mass from material density (already in Wi_N from A1)
         #   - Loads(DEAD) converts ALL DEAD loads to mass, INCLUDING self-weight again
+        # This applies to BOTH frame AND shell elements!
         # Proven: T1 error = 0.03% with double count vs 7% without
         # -> Add frame SW at floor level AGAIN to match SAP2000
         frame_sw_copy = [w for w in Wi_N]  # Save before doubling
@@ -2975,6 +3268,10 @@ def run_modal_analysis(data, num_modes=12):
             # Frame SW portion = Wi_N[fi] - slab_mass_per_floor_N
             frame_sw_at_floor = frame_sw_copy[fi] - slab_mass_per_floor_N
             Wi_N[fi] += frame_sw_at_floor  # Add frame SW again (double count)
+            
+            if plate_enabled:
+                # Also double-count shell SW (DEAD pattern SelfWtMult=1 doubles shell too)
+                Wi_N[fi] += shell_sw_force_N
         
         Wi_kN = [w / 1000.0 for w in Wi_N]
         
@@ -3049,6 +3346,7 @@ def run_modal_analysis(data, num_modes=12):
         
         # --- Build Elements ---
         transf_counter = 1
+        _beam_centroid_cache = {}  # floor_node_id -> centroid_node_id (for beam insertion offset)
         
         for item in processed_elements:
             sec = item['raw']['section']
@@ -3095,14 +3393,14 @@ def run_modal_analysis(data, num_modes=12):
             coord_start = node_coords[n_start_elem]
             coord_end = node_coords[n_end_elem]
             
-            # --- No beam insertion offset for modal ---
-            # SAP2000 CardinalPt=8 (top center) handles insertion internally;
-            # OpenSees rigidLink('beam') creates rigid arms that over-stiffen
+            # --- Beam Insertion Point Offset (CardinalPt=8, top center) ---
+            # SAP2000 offsets beam centroid down by d/2 via rigid arms
+            # OpenSees: create centroid nodes + rigidLink('beam')
             beam_start = n_start_elem
             beam_end = n_end_elem
             
             # --- Rigid End Zone Offsets for Modal Analysis ---
-            # SAP2000: Column RigidFactor=0.3, Beam RigidFactor=0
+            # SAP2000: LengthI=0, LengthJ=0 → no rigid end zones regardless of RigidFactor
             MODAL_COL_REZ = 0.0
             MODAL_BEAM_REZ = 0.0
             
@@ -3135,8 +3433,13 @@ def run_modal_analysis(data, num_modes=12):
             vy_v = coord_end[1]-coord_start[1]
             vz_c = coord_end[2]-coord_start[2]
             
-            # Subdivide: 8 for beams, 4 for columns
-            num_subs = 8 if not item['is_vertical'] else 4
+            # Subdivide: match shell mesh when plate enabled
+            # Legacy: single element per member (match SAP2000 DOF structure)
+            if plate_enabled and not item['is_vertical']:
+                plate_mesh_size = float(slab_plate.get('mesh_size_mm', 250.0))
+                num_subs = max(1, int(round(L_elem / plate_mesh_size)))
+            else:
+                num_subs = 1
             
             prev_node = beam_start
             for k_sub in range(num_subs):
@@ -3152,6 +3455,44 @@ def run_modal_analysis(data, num_modes=12):
                     ops.node(curr_node, nx, ny, nz)
                     next_node_id += 1
                 
+                # --- Create beam centroid node + rigidLink for insertion offset ---
+                # Only in plate mode (rigidLink compatible with shell mesh nodes)
+                # Legacy mode uses jntOffset instead (avoids multi-level constraint)
+                if plate_enabled and not item['is_vertical']:
+                    d_beam_ins = float(sec.get('d_mm', 0))
+                    if d_beam_ins > 0:
+                        # Determine which floor-level node needs a centroid
+                        if k_sub == 0:
+                            floor_node_i = beam_start
+                        else:
+                            floor_node_i = None  # prev already set to centroid
+                        floor_node_j = curr_node  # curr_node is floor-level
+                        
+                        # Create or get centroid node for J-end (curr_node)
+                        if floor_node_j not in _beam_centroid_cache:
+                            fn_coords = node_coords[floor_node_j]
+                            centroid_z = fn_coords[2] - d_beam_ins / 2.0
+                            centroid_nid = next_node_id
+                            ops.node(centroid_nid, fn_coords[0], fn_coords[1], centroid_z)
+                            node_coords[centroid_nid] = (fn_coords[0], fn_coords[1], centroid_z)
+                            next_node_id += 1
+                            ops.rigidLink('bar', floor_node_j, centroid_nid)
+                            _beam_centroid_cache[floor_node_j] = centroid_nid
+                        curr_node = _beam_centroid_cache[floor_node_j]
+                        
+                        # Create or get centroid node for I-end (beam_start) on first sub
+                        if floor_node_i is not None:
+                            if floor_node_i not in _beam_centroid_cache:
+                                fn_coords = node_coords[floor_node_i]
+                                centroid_z = fn_coords[2] - d_beam_ins / 2.0
+                                centroid_nid = next_node_id
+                                ops.node(centroid_nid, fn_coords[0], fn_coords[1], centroid_z)
+                                node_coords[centroid_nid] = (fn_coords[0], fn_coords[1], centroid_z)
+                                next_node_id += 1
+                                ops.rigidLink('bar', floor_node_i, centroid_nid)
+                                _beam_centroid_cache[floor_node_i] = centroid_nid
+                            prev_node = _beam_centroid_cache[floor_node_i]
+                
                 sub_ele_id = item['id'] * 100 + k_sub
                 if sub_ele_id > 2000000000:
                     sub_ele_id = int(sub_ele_id % 1000000 + 900000)
@@ -3165,24 +3506,45 @@ def run_modal_analysis(data, num_modes=12):
                     sub_dI = list(dI)
                 if k_sub == num_subs - 1:
                     sub_dJ = list(dJ)
-                
+
+                # Legacy mode: beam insertion offset via jntOffset
+                # SAP2000 CardinalPt=8 (top center): centroid d/2 below floor
+                # Offset ALL beam sub-element ends downward by d/2
+                # (avoids rigidLink multi-level constraint with rigidDiaphragm)
+                if not plate_enabled and not item['is_vertical']:
+                    d_ins = float(sec.get('d_mm', 0))
+                    if d_ins > 0:
+                        sub_dI[2] -= d_ins / 2.0
+                        sub_dJ[2] -= d_ins / 2.0
+
                 ops.geomTransf('Linear', sub_transf_tag,
                               vecxz[0], vecxz[1], vecxz[2],
                               '-jntOffset', sub_dI[0], sub_dI[1], sub_dI[2],
                               sub_dJ[0], sub_dJ[1], sub_dJ[2])
                 
-                # NO element -mass: incompatible with rigidDiaphragm
-                # (causes mass double-counting, participation > 100%)
-                # All mass lumped at master node instead
-                ops.element('ElasticTimoshenkoBeam', sub_ele_id,
-                           prev_node, curr_node,
-                           E, G_mat, A, J, Ops_Iy, Ops_Iz, Ops_Avy, Ops_Avz,
-                           sub_transf_tag)
+                # Element mass: -mass on elements when plate mode (like reference)
+                if plate_enabled:
+                    ops.element('ElasticTimoshenkoBeam', sub_ele_id,
+                               prev_node, curr_node,
+                               E, G_mat, A, J, Ops_Iy, Ops_Iz, Ops_Avy, Ops_Avz,
+                               sub_transf_tag,
+                               '-mass', mass_per_length)
+                else:
+                    # Legacy: NO element -mass (incompatible with rigidDiaphragm)
+                    ops.element('ElasticTimoshenkoBeam', sub_ele_id,
+                               prev_node, curr_node,
+                               E, G_mat, A, J, Ops_Iy, Ops_Iz, Ops_Avy, Ops_Avz,
+                               sub_transf_tag)
                 
                 prev_node = curr_node
         
+        # Track next available element ID for shell mesh
+        # Element IDs use item_id*100+k pattern, so find max and add offset
+        max_beam_elem = max((item['id'] * 100 + 10) for item in processed_elements)
+        next_elem_id = max_beam_elem + 1000  # Safe offset for shell elements
+        
         # ================================================================
-        # C. RIGID DIAPHRAGM + MASS ASSIGNMENT
+        # C. DIAPHRAGM + MASS ASSIGNMENT
         # ================================================================
         center_x = (min(x_coords) + max(x_coords)) / 2.0
         center_y = (min(y_coords) + max(y_coords)) / 2.0
@@ -3190,61 +3552,111 @@ def run_modal_analysis(data, num_modes=12):
         
         master_nodes = []
         mass_nodes_per_floor = {}
+        shell_floor_nodes = {}
         
-        for fi in range(n_stories):
-            fz = floor_z[fi]
+        if plate_enabled:
+            # ---- SHELL PLATE MODE ----
+            # Shell provides: in-plane rigidity + slab mass
+            # Element -mass provides: frame mass
+            # NO rigidDiaphragm needed
+            print("\n  --- Shell Plate Mode (ShellMITC4) ---")
             
-            master_nid = next_node_id
-            next_node_id += 1
-            ops.node(master_nid, center_x, center_y, fz)
-            node_coords[master_nid] = (center_x, center_y, fz)
+            shell_floor_nodes, next_node_id, next_elem_id = _create_shell_plate_mesh(
+                ops, floor_z, x_coords, y_coords, span_x, span_y,
+                n_span_x, n_span_y, slab_plate,
+                node_coords, next_node_id, next_elem_id
+            )
             
-            floor_slave_nodes = []
-            for nid in original_joint_nids:
-                if nid == master_nid or nid in fixed_nodes:
-                    continue
-                coords = node_coords.get(nid, (0,0,0))
-                if abs(coords[2] - fz) < 100.0:
-                    floor_slave_nodes.append(nid)
+            # Additional mass for ADL (not part of shell density)
+            # Distribute ADL to all shell nodes on each floor
+            n_panels = n_span_x * n_span_y
+            panel_area = span_x * span_y
+            adl_total_N = SLAB_ADL_PRESSURE * panel_area * n_panels
             
-            if floor_slave_nodes:
-                ops.rigidDiaphragm(3, master_nid, *floor_slave_nodes)
+            for fi in range(n_stories):
+                floor_shell_nids = shell_floor_nodes[fi]
+                n_fnodes = len(floor_shell_nids)
+                if n_fnodes > 0 and adl_total_N > 0:
+                    adl_mass_per_node = adl_total_N / G_ACC_MM / n_fnodes
+                    for snid in floor_shell_nids:
+                        ops.mass(snid, adl_mass_per_node, adl_mass_per_node, 0.0, 0.0, 0.0, 0.0)
+                
+                # Also add frame SW double-count (SAP2000 mass source)
+                frame_sw_1x = (Wi_N[fi] - slab_mass_per_floor_N) / 2.0
+                if frame_sw_1x > 0 and n_fnodes > 0:
+                    fw_mass_per_node = frame_sw_1x / G_ACC_MM / n_fnodes
+                    for snid in floor_shell_nids:
+                        ops.mass(snid, fw_mass_per_node, fw_mass_per_node, 0.0, 0.0, 0.0, 0.0)
+                
+                print(f"    Floor {fi+1}: shell_nodes={n_fnodes}, "
+                      f"ADL_mass/node={adl_total_N/G_ACC_MM/n_fnodes:.6f}, "
+                      f"FW_extra/node={frame_sw_1x/G_ACC_MM/n_fnodes:.6f}")
             
-            mass_nodes_per_floor[fi] = floor_slave_nodes
-            
-            # Fix DOFs 3,4,5 (Z, Rx, Ry) on master
-            ops.fix(master_nid, 0, 0, 1, 1, 1, 0)
-            
-            # All mass at master: frame SW (double-count) + slab + ADL
-            mass_val = Wi_N[fi] / G_ACC_MM
-            
-            # Rotational inertia: corner-lumped formula
-            # Matches SAP2000 ASSEMBLED JOINT MASSES (0.01% error)
-            Lx_floor = max(x_coords) - min(x_coords)
-            Ly_floor = max(y_coords) - min(y_coords)
-            Iz_mass = mass_val * ((Lx_floor/2.0)**2 + (Ly_floor/2.0)**2)
-            
-            ops.mass(master_nid, mass_val, mass_val, 0.0, 0.0, 0.0, Iz_mass)
-            
-            master_nodes.append(master_nid)
-            print(f"    Floor {fi+1}: master={master_nid}, mass={mass_val:.4f}, "
-                  f"Iz_mass={Iz_mass:.2f}, slaves={len(floor_slave_nodes)}")
+            # No master nodes in plate mode
+            master_nodes = []
         
+        else:
+            # ---- LEGACY MODE: NO rigid diaphragm ----
+            # SAP2000 defines diaphragm but does NOT assign it to joints.
+            # Floor in-plane behavior comes from beam stiffness only.
+            # Mass is distributed to individual floor joints.
+            print("\n  --- Legacy Mode (No Diaphragm — match SAP2000) ---")
+
+            for fi in range(n_stories):
+                fz = floor_z[fi]
+
+                floor_joint_nodes = []
+                for nid in original_joint_nids:
+                    if nid in fixed_nodes:
+                        continue
+                    coords = node_coords.get(nid, (0,0,0))
+                    if abs(coords[2] - fz) < 100.0:
+                        floor_joint_nodes.append(nid)
+
+                mass_nodes_per_floor[fi] = floor_joint_nodes
+                n_fj = len(floor_joint_nodes)
+
+                if n_fj > 0:
+                    mass_per_node = Wi_N[fi] / G_ACC_MM / n_fj
+                    for nid in floor_joint_nodes:
+                        ops.mass(nid, mass_per_node, mass_per_node, 0.0, 0.0, 0.0, 0.0)
+
+                print(f"    Floor {fi+1}: joints={n_fj}, "
+                      f"mass/joint={Wi_N[fi]/G_ACC_MM/max(n_fj,1):.6f}, "
+                      f"total_mass={Wi_N[fi]/G_ACC_MM:.4f}")
+
+            # Cap num_modes to number of mass DOFs (2 per joint: X, Y)
+            n_mass_dofs = sum(len(mass_nodes_per_floor.get(fi2, [])) for fi2 in range(n_stories)) * 2
+            if num_modes > n_mass_dofs:
+                print(f"  Limiting num_modes from {num_modes} to {n_mass_dofs} (mass DOFs)")
+                num_modes = n_mass_dofs
+
         # ================================================================
         # D. EIGENVALUE ANALYSIS
         # ================================================================
-        # Use Lagrange multiplier for rigid constraints in eigenvalue
-        # (Transformation eliminates DOFs, Penalty corrupts matrix)
-        ops.system('FullGeneral')
-        ops.numberer('RCM')
-        ops.constraints('Transformation')
-        
+        if plate_enabled:
+            # Shell plate mode: rigidLink for beam insertion requires Transformation
+            ops.system('FullGeneral')
+            ops.numberer('RCM')
+            ops.constraints('Transformation')
+            print(f"\n  Solver: FullGeneral + Transformation (rigidLink beam insertion)")
+        else:
+            # Legacy: FullGeneral + fullGenLapack avoids Arnoldi workspace issues
+            ops.system('FullGeneral')
+            ops.numberer('RCM')
+            ops.constraints('Plain')
+            print(f"\n  Solver: FullGeneral + Plain (no diaphragm constraints)")
+
         print(f"\n  Running eigenvalue analysis ({num_modes} modes)...")
-        print(f"  Solver: -fullGenLapack (required for Transformation + rigidDiaphragm)")
+
+        if plate_enabled:
+            print(f"  Solver: -fullGenLapack (required for Transformation + rigidLink)")
+            eigenvalues = ops.eigen('-fullGenLapack', num_modes)
+            print(f"  Solver: -fullGenLapack completed successfully")
+        else:
+            eigenvalues = ops.eigen('-fullGenLapack', num_modes)
+            print(f"  Eigen solver (-fullGenLapack) completed successfully")
         
-        eigenvalues = ops.eigen('-fullGenLapack', num_modes)
-        
-        print(f"  Solver: -fullGenLapack completed successfully")
         print(f"  Successfully computed {len(eigenvalues)} modes")
         print(f"  Raw eigenvalues: {[f'{e:.4f}' for e in eigenvalues]}")
         
@@ -3277,44 +3689,112 @@ def run_modal_analysis(data, num_modes=12):
             })
         
         # --- Participation factors ---
-        # Using master nodes from rigid diaphragm
         G_ACC_MM = 9810.0
-        total_mass = sum(Wi_N) / G_ACC_MM
-        Lx_floor = max(x_coords) - min(x_coords)
-        Ly_floor = max(y_coords) - min(y_coords)
-        total_Iz = sum(Wi_N[fi] / G_ACC_MM * ((Lx_floor/2.0)**2 + (Ly_floor/2.0)**2)
-                      for fi in range(n_stories))
         
-        for mode_info in modes_data:
-            mode_num = mode_info["mode"]
-            
-            Lx = 0.0; Ly = 0.0; Lrz = 0.0
-            Mx_gen = 0.0; My_gen = 0.0; Mrz_gen = 0.0
-            
-            for fi, master_nid in enumerate(master_nodes):
-                m = Wi_N[fi] / G_ACC_MM
-                Iz_m = m * ((Lx_floor/2.0)**2 + (Ly_floor/2.0)**2)
+        if plate_enabled:
+            # Shell plate mode: compute from ALL shell floor nodes
+            # Mass comes from shell density + ADL node mass + frame SW extra
+            for mode_info in modes_data:
+                mode_num = mode_info["mode"]
                 
-                phi_x = ops.nodeEigenvector(master_nid, mode_num, 1)
-                phi_y = ops.nodeEigenvector(master_nid, mode_num, 2)
-                phi_rz = ops.nodeEigenvector(master_nid, mode_num, 6)
+                Lx_pf = 0.0; Ly_pf = 0.0; Lrz_pf = 0.0
+                Mx_gen = 0.0; My_gen = 0.0; Mrz_gen = 0.0
+                total_mass_pf = 0.0; total_Iz_pf = 0.0
                 
-                Lx += m * phi_x;     Mx_gen += m * phi_x**2
-                Ly += m * phi_y;     My_gen += m * phi_y**2
-                Lrz += Iz_m * phi_rz; Mrz_gen += Iz_m * phi_rz**2
-            
-            meff_x = (Lx**2 / Mx_gen) if abs(Mx_gen) > 1e-20 else 0.0
-            meff_y = (Ly**2 / My_gen) if abs(My_gen) > 1e-20 else 0.0
-            meff_rz = (Lrz**2 / Mrz_gen) if abs(Mrz_gen) > 1e-20 else 0.0
-            
-            mode_info["UX_ratio"] = round(meff_x / total_mass, 8) if total_mass > 0 else 0.0
-            mode_info["UY_ratio"] = round(meff_y / total_mass, 8) if total_mass > 0 else 0.0
-            mode_info["RZ_ratio"] = round(meff_rz / total_Iz, 8) if total_Iz > 0 else 0.0
-            
-            # Determine dominant direction
-            ratios = {"UX": mode_info["UX_ratio"], "UY": mode_info["UY_ratio"], "RZ": mode_info["RZ_ratio"]}
-            dominant = max(ratios, key=ratios.get)
-            mode_info["dominant"] = dominant
+                for fi in range(n_stories):
+                    floor_nids = shell_floor_nodes.get(fi, [])
+                    n_fn = len(floor_nids)
+                    if n_fn == 0: continue
+                    
+                    # Approximate mass per node (total Wi / n_nodes)
+                    m_per_node = Wi_N[fi] / G_ACC_MM / n_fn
+                    
+                    for snid in floor_nids:
+                        sc = node_coords[snid]
+                        dx_c = sc[0] - center_x
+                        dy_c = sc[1] - center_y
+                        r2 = dx_c**2 + dy_c**2
+                        Iz_node = m_per_node * r2
+                        
+                        phi_x = ops.nodeEigenvector(snid, mode_num, 1)
+                        phi_y = ops.nodeEigenvector(snid, mode_num, 2)
+                        phi_rz = ops.nodeEigenvector(snid, mode_num, 6)
+                        
+                        Lx_pf += m_per_node * phi_x
+                        Ly_pf += m_per_node * phi_y
+                        Lrz_pf += Iz_node * phi_rz
+                        
+                        Mx_gen += m_per_node * phi_x**2
+                        My_gen += m_per_node * phi_y**2
+                        Mrz_gen += Iz_node * phi_rz**2
+                        
+                        total_mass_pf += m_per_node
+                        total_Iz_pf += Iz_node
+                
+                meff_x = (Lx_pf**2 / Mx_gen) if abs(Mx_gen) > 1e-20 else 0.0
+                meff_y = (Ly_pf**2 / My_gen) if abs(My_gen) > 1e-20 else 0.0
+                meff_rz = (Lrz_pf**2 / Mrz_gen) if abs(Mrz_gen) > 1e-20 else 0.0
+                
+                mode_info["UX_ratio"] = round(meff_x / total_mass_pf, 8) if total_mass_pf > 0 else 0.0
+                mode_info["UY_ratio"] = round(meff_y / total_mass_pf, 8) if total_mass_pf > 0 else 0.0
+                mode_info["RZ_ratio"] = round(meff_rz / total_Iz_pf, 8) if total_Iz_pf > 0 else 0.0
+                
+                ratios = {"UX": mode_info["UX_ratio"], "UY": mode_info["UY_ratio"], "RZ": mode_info["RZ_ratio"]}
+                dominant = max(ratios, key=ratios.get)
+                mode_info["dominant"] = dominant
+        
+        else:
+            # Legacy: no diaphragm — compute participation from floor joint nodes
+            total_mass = sum(Wi_N) / G_ACC_MM
+            # Total Iz from individual joint positions (for RZ normalization)
+            total_Iz = 0.0
+            for fi in range(n_stories):
+                for nid in mass_nodes_per_floor.get(fi, []):
+                    c = node_coords.get(nid, (0,0,0))
+                    m_n = Wi_N[fi] / G_ACC_MM / max(len(mass_nodes_per_floor[fi]), 1)
+                    total_Iz += m_n * ((c[0]-center_x)**2 + (c[1]-center_y)**2)
+
+            for mode_info in modes_data:
+                mode_num = mode_info["mode"]
+
+                Lx_pf = 0.0; Ly_pf = 0.0; Lrz_pf = 0.0
+                Mx_gen = 0.0; My_gen = 0.0; Mrz_gen = 0.0
+
+                for fi in range(n_stories):
+                    fj_nodes = mass_nodes_per_floor.get(fi, [])
+                    n_fj = max(len(fj_nodes), 1)
+                    m_n = Wi_N[fi] / G_ACC_MM / n_fj
+
+                    for nid in fj_nodes:
+                        c = node_coords[nid]
+                        dx_c = c[0] - center_x
+                        dy_c = c[1] - center_y
+
+                        phi_x = ops.nodeEigenvector(nid, mode_num, 1)
+                        phi_y = ops.nodeEigenvector(nid, mode_num, 2)
+
+                        # RZ influence vector: r_x = -(y-yc), r_y = (x-xc)
+                        phi_rz_eff = phi_y * dx_c - phi_x * dy_c
+
+                        Lx_pf  += m_n * phi_x
+                        Ly_pf  += m_n * phi_y
+                        Lrz_pf += m_n * phi_rz_eff
+
+                        Mx_gen  += m_n * phi_x**2
+                        My_gen  += m_n * phi_y**2
+                        Mrz_gen += m_n * (phi_x**2 + phi_y**2)
+
+                meff_x  = (Lx_pf**2  / Mx_gen)  if abs(Mx_gen)  > 1e-20 else 0.0
+                meff_y  = (Ly_pf**2  / My_gen)  if abs(My_gen)  > 1e-20 else 0.0
+                meff_rz = (Lrz_pf**2 / Mrz_gen) if abs(Mrz_gen) > 1e-20 else 0.0
+
+                mode_info["UX_ratio"] = round(meff_x  / total_mass, 8) if total_mass > 0 else 0.0
+                mode_info["UY_ratio"] = round(meff_y  / total_mass, 8) if total_mass > 0 else 0.0
+                mode_info["RZ_ratio"] = round(meff_rz / total_Iz,   8) if total_Iz   > 0 else 0.0
+
+                ratios = {"UX": mode_info["UX_ratio"], "UY": mode_info["UY_ratio"], "RZ": mode_info["RZ_ratio"]}
+                dominant = max(ratios, key=ratios.get)
+                mode_info["dominant"] = dominant
         
         res["modes"] = modes_data
         res["num_modes_computed"] = len(modes_data)
@@ -3911,7 +4391,7 @@ def combine_load_cases(results, combo_config, load_patterns):
 
             combo_result['nodes'][nid] = {
                 'coords': coords,
-                'disp': [round(v, 4) for v in combined_disp],
+                'disp': [round(v, 10) for v in combined_disp],
                 'reaction': combined_reaction
             }
 
