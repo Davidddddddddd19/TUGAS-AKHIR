@@ -215,6 +215,7 @@ def display_results():
         dcr_data.append([
             str(i),
             str(e.get('element_id', '')),
+            e.get('label_name', '-'),
             e.get('frame_label', '?'),
             e.get('design_type', '?'),
             sec,
@@ -231,7 +232,7 @@ def display_results():
         ])
 
     print_table(dcr_data,
-                ["No", "ElementID", "Frame", "Type", "Section", "Combo", "Eq.",
+                ["No", "ElementID", "Label", "Frame", "Type", "Section", "Combo", "Eq.",
                  "Pr (kN)", "MrMaj (kN-m)", "MrMin (kN-m)",
                  "PRatio", "MMajR", "MMinR", "DCR", "Status"],
                 "Design Check Ratio (DCR) Summary")
@@ -246,6 +247,7 @@ def display_results():
             sec = _short_section(e.get("design_section", "?"))
             cap_col_data.append([
                 str(e.get('element_id', '')),
+                e.get('label_name', '-'),
                 e['frame_label'],
                 sec,
                 "{:.2f}".format(cap.get('PcComp_kN', 0)),
@@ -260,7 +262,7 @@ def display_results():
             ])
 
         print_table(cap_col_data,
-                    ["ElementID", "Frame", "Section", "PcComp (kN)", "PcTens (kN)",
+                    ["ElementID", "Label", "Frame", "Section", "PcComp (kN)", "PcTens (kN)",
                      "McMaj (kN-m)", "McMin (kN-m)", "PhiVn (kN)", "Cb",
                      "Axial", "Flange", "Web"],
                     "Design Capacity - Columns")
@@ -275,6 +277,7 @@ def display_results():
             sec = _short_section(e.get("design_section", "?"))
             cap_beam_data.append([
                 str(e.get('element_id', '')),
+                e.get('label_name', '-'),
                 e['frame_label'],
                 sec,
                 "{:.2f}".format(cap.get('PcComp_kN', 0)),
@@ -289,7 +292,7 @@ def display_results():
             ])
 
         print_table(cap_beam_data,
-                    ["ElementID", "Frame", "Section", "PcComp (kN)", "PcTens (kN)",
+                    ["ElementID", "Label", "Frame", "Section", "PcComp (kN)", "PcTens (kN)",
                      "McMaj (kN-m)", "McMin (kN-m)", "PhiVn (kN)", "Cb",
                      "Axial", "Flange", "Web"],
                     "Design Capacity - Beams")
@@ -305,6 +308,7 @@ def display_results():
         st = "OK" if vr <= 1.0 else "**NG**"
         shear_data.append([
             str(e.get('element_id', '')),
+            e.get('label_name', '-'),
             e.get('frame_label', '?'),
             e.get('design_type', '?'),
             sec,
@@ -317,7 +321,7 @@ def display_results():
         ])
 
     print_table(shear_data,
-                ["ElementID", "Frame", "Type", "Section", "Combo", "Loc (mm)",
+                ["ElementID", "Label", "Frame", "Type", "Section", "Combo", "Loc (mm)",
                  "Vr (kN)", "PhiVn (kN)", "VRatio", "Status"],
                 "Shear Check Detail")
 
@@ -333,8 +337,8 @@ def display_results():
             continue
 
         sec = _short_section(e.get("design_section", "?"))
-        elem_label = "{} (ID:{}) - {} - {}".format(
-            e.get('frame_label', '?'), e.get('element_id', ''),
+        elem_label = "{} | {} (ID:{}) - {} - {}".format(
+            e.get('label_name', '-'), e.get('frame_label', '?'), e.get('element_id', ''),
             e.get('design_type', '?'), sec)
 
         detail_data = []
@@ -369,8 +373,8 @@ def display_results():
             pmm = elem.get("pmm_detail", {})
             shear = elem.get("shear_detail", {})
 
-            out.print_md("#### {} - {} ({})".format(
-                elem['frame_label'], sec, elem['design_type']))
+            out.print_md("#### {} | {} - {} ({})".format(
+                elem.get('label_name', '-'), elem['frame_label'], sec, elem['design_type']))
 
             # Capacity vs Demand table
             cvd_data = [
