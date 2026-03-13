@@ -131,6 +131,7 @@ class ElementDesignResult:
     """Governing design result per element (SAP2000 concept)."""
     element_id: int = 0
     frame_label: str = ""
+    label_name: str = ""
     design_type: str = ""        # "Column" or "Beam"
     design_section: str = ""
     status: str = "OK"           # "OK" or "Overstressed"
@@ -1260,6 +1261,7 @@ class SteelDesignEngine:
         elem_id = str(elem["id"])
         elem_type = elem.get("type", "Column")
         frame_label = elem.get("frame_label", "?")
+        label_name = elem.get("label_name", "-")
         section_name = sec.name
 
         # --- Classify section ---
@@ -1452,6 +1454,7 @@ class SteelDesignEngine:
         return ElementDesignResult(
             element_id=elem["id"],
             frame_label=frame_label,
+            label_name=label_name,
             design_type=elem_type,
             design_section=section_name,
             status=status,
@@ -1674,6 +1677,7 @@ class SteelDesignEngine:
             elem_out = {
                 "element_id": r.element_id,
                 "frame_label": r.frame_label,
+                "label_name": r.label_name,
                 "design_type": r.design_type,
                 "design_section": r.design_section,
                 "status": r.status,
