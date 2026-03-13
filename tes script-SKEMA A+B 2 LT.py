@@ -55,7 +55,21 @@ COL_SPLICE_OFFSET_MM        = 1500    # Offset sambungan di atas level (mm)
 COL_TOP_OFFSET_MM           = 500     # Offset di level teratas bangunan (mm)
 COL_MIN_DIST_TO_LEVEL_MM    = 2000 # Jarak minimum splice ke level terdekat (mm)
 
-# ============================================================
+# ================= GRID SYSTEM CONFIG =================
+# Auto-generate dari bay count
+# GRID_X_LABELS: label angka untuk sumbu X (kolom grid vertikal)
+# GRID_Y_LABELS: label huruf untuk sumbu Y (kolom grid horizontal)
+GRID_X_LABELS   = [str(i+1) for i in range(BAY_X_COUNT + 1)]   # ["1","2","3",...]
+GRID_Y_LABELS   = [chr(65+i) for i in range(BAY_Y_COUNT + 1)]  # ["A","B","C",...]
+CREATE_REVIT_GRIDS = True   # True = buat Revit Grid elements; False = hanya label JSON
+
+# --- Koordinat grid dalam mm (centered di origin 0,0,0) ---
+_GRID_X_COORDS_MM = [int(round(-(BAY_X_COUNT * SPAN_X_MM / 2.0) + i * SPAN_X_MM))
+                     for i in range(BAY_X_COUNT + 1)]
+_GRID_Y_COORDS_MM = [int(round(-(BAY_Y_COUNT * SPAN_Y_MM / 2.0) + j * SPAN_Y_MM))
+                     for j in range(BAY_Y_COUNT + 1)]
+_Z_LEVELS_MM = [k * int(HEIGHT_MM) for k in range(int(N_STORY) + 1)]
+# ======================================================
 
 COLUMN_ROTATION_DEG = 0
 BEAM_ANALYTICAL_ROTATION_DEG = 0  # Rotasi analytical beam (derajat), default 0 = Revit default
@@ -67,14 +81,38 @@ JOIN_STATUS = True  # Set False to disallow joins (untuk mencegah cut/extend oto
 # ================= SECTION DATABASE (SAP2000-LIKE) =================
 # Naming: IWFdxbfxtwxtf (semua dimensi dalam mm)
 SECTIONS = {
-    "IWF303.4x165x6x10.2":   {"d": 303.4, "bf": 165, "tw": 6,  "tf": 10.2, "r": 8.9},
-    "IWF307.9x305.3x9.9x15.4": {"d": 307.9, "bf": 305.3, "tw": 9.9,  "tf": 15.4, "r": 15.2},
+    "IWF200x100x5.5x8":        {"d": 200,   "bf": 100,   "tw": 5.5, "tf": 8,    "r": 11},
+    "IWF303.4x165x6x10.2":     {"d": 303.4, "bf": 165,   "tw": 6,   "tf": 10.2, "r": 8.9},
+    "IWF307.9x305.3x9.9x15.4": {"d": 307.9, "bf": 305.3, "tw": 9.9, "tf": 15.4, "r": 15.2},
 }
 
 # === SECTION ASSIGNMENT (Per Group) ===
-SECTION_COL      = "IWF307.9x305.3x9.9x15.4"      # Kolom
-SECTION_BEAM_EXT = "IWF303.4x165x6x10.2"    # Balok Eksterior (tepi grid)
-SECTION_BEAM_INT = "IWF303.4x165x6x10.2"     # Balok Interior (dalam grid)
+SECTION_COL      = "IWF307.9x305.3x9.9x15.4"  # Kolom
+SECTION_BEAM_EXT = "IWF303.4x165x6x10.2"       # Balok Eksterior (tepi grid)
+SECTION_BEAM_INT = "IWF303.4x165x6x10.2"       # Balok Interior (dalam grid)
+
+# ================= SECONDARY BEAM CONFIG =================
+# Balok anak ditempatkan di tengah bay untuk memperkecil bentang slab.
+# enabled=False  → balok anak diabaikan sepenuhnya (tidak dibuat, tidak dianalisis).
+# enabled=True   → balok anak masuk ke seluruh pipeline: Create → Analysis → Design Check → Auto-Select.
+#
+# Arah balok anak:
+#   count_per_bay_x : jumlah balok anak arah X per bay (bentang X_start→X_end,
+#                     ditempatkan di Y = Y_start + k/(n+1)·span_Y).
+#                     1 = 1 balok di Y_mid; 2 = 2 balok di 1/3 & 2/3·span_Y.
+#   count_per_bay_y : jumlah balok anak arah Y per bay (bentang Y_start→Y_end,
+#                     ditempatkan di X = X_start + k/(n+1)·span_X).
+#                     0 = tidak ada.
+#
+# floors : "all" atau list lantai (1-indexed), misal [1, 2].
+SECONDARY_BEAM_CONFIG = {
+    "enabled":        False,
+    "count_per_bay_x": 1,    # 1 balok di Y_mid
+    "count_per_bay_y": 0,    # tidak ada balok arah Y
+    "section":        "IWF200x100x5.5x8",
+    "material":       "BJ 41",
+    "floors":         "all",
+}
 
 # ================= MATERIAL DATABASE (SAP2000-LIKE) =================
 # Properties: Fy(MPa), Fu(MPa), E(MPa), Nu, Rho(kg/m³), thermal
@@ -108,7 +146,7 @@ COL_RFA_PATH  = r"C:\ProgramData\Autodesk\RVT 2024\Libraries\English\US\Structur
 #   "Fixed"  = Jepit   (semua DOF restrained)
 #   "Pinned" = Sendi   (translasi restrained, rotasi free)
 #   "Roller" = Roller  (hanya Tz restrained)
-SUPPORT_TYPE = "Fixed"
+SUPPORT_TYPE = "Pinned"
 
 # DOF auto-resolver (internal, user tidak perlu ubah)
 _SUPPORT_DOF_MAP = {
@@ -141,7 +179,17 @@ ADL_kg_m2                   = add_thickness_cm * MORTAR_WEIGHT_kg_m2_cm
 ADL_kN_m2                   = ADL_kg_m2 * GRAVITY_m_s2 / 1000.0
 SLAB_ADL_PRESSURE           = round(ADL_kN_m2 * 0.001, 5)  # MPa (N/mm²)
 
-LIVE_LOAD_PRESSURE          = 0.024  # MPa (24 kN/m²)
+LIVE_LOAD_PRESSURE          = 0.024  # MPa (24 kN/m2)
+
+# ================= SHELL PLATE SLAB CONFIG =================
+# Jika enabled=True, slab dimodelkan sebagai elemen ShellDKGQ
+# memberikan in-plane rigidity + distributed mass (tanpa rigidDiaphragm).
+# Jika enabled=False, slab distribusi beban via yield line beam (mode lama).
+SLAB_PLATE_ENABLED          = False
+SLAB_PLATE_E_MPA            = 205000.0    # Sama dengan rangka BJ 41 (MPa)
+SLAB_PLATE_NU               = 0.3         # Sama dengan rangka BJ 41
+SLAB_PLATE_RHO_KG_M3        = 7156.44     # Sama dengan rangka BJ 41 (kg/m3)
+SLAB_PLATE_MESH_SIZE_MM     = 250         # Ukuran mesh shell (mm)
 
 # ================= LOAD PATTERNS (SAP2000-like) =================
 # Setiap pattern memiliki:
@@ -160,7 +208,8 @@ LOAD_PATTERNS = {
     "SelfWeight": {
         "type": "Dead",
         "self_weight_mult": 1,       # Include berat sendiri frame
-        "pressure_MPa": SLAB_SW_PRESSURE  # + beban slab
+        # Jika shell plate aktif, SW slab dari density shell (jangan double-count)
+        "pressure_MPa": 0.0 if SLAB_PLATE_ENABLED else SLAB_SW_PRESSURE
     },
     "ADL": {
         "type": "Dead",
@@ -1625,6 +1674,192 @@ def get_design_parameters(element_type, topology):
 # ELEMENT DATA
 # ===================================================
 
+# ===================================================
+# GRID SYSTEM: LABEL & REVIT GRID CREATION
+# ===================================================
+
+def assign_label_name(elem_data, x_coords_mm, y_coords_mm, z_levels_mm,
+                      grid_x_labels, grid_y_labels, tol=15.0):
+    """
+    Map koordinat topologi elemen ke label_name grid.
+
+    Format:
+      Kolom         : "{gridY}-{gridX}/{floor}"       e.g. "A-1/1"
+      Balok arah X  : "{gridY}/{gridX_s}-{gridX_e}/{floor}"  e.g. "A/1-2/1"
+      Balok arah Y  : "{gridY_s}-{gridY_e}/{gridX}/{floor}"  e.g. "A-B/1/2"
+
+    Args:
+        elem_data      : dict elemen (type, topology)
+        x_coords_mm    : list koordinat X grid dalam mm
+        y_coords_mm    : list koordinat Y grid dalam mm
+        z_levels_mm    : list elevasi lantai dalam mm
+        grid_x_labels  : list label X ["1","2","3",...]
+        grid_y_labels  : list label Y ["A","B","C",...]
+        tol            : toleransi snap (mm)
+    """
+    def snap_idx(val, coords):
+        best_i, best_d = -1, tol + 1
+        for i, c in enumerate(coords):
+            d = abs(float(val) - float(c))
+            if d < best_d:
+                best_d, best_i = d, i
+        return best_i if best_d <= tol else -1
+
+    def floor_num(z_val):
+        idx = snap_idx(z_val, z_levels_mm)
+        return max(idx, 0)
+
+    topo = elem_data.get("topology", {})
+    start = topo.get("start_node", [0, 0, 0])
+    end   = topo.get("end_node",   [0, 0, 0])
+    sx, sy, sz = float(start[0]), float(start[1]), float(start[2])
+    ex, ey, ez = float(end[0]),   float(end[1]),   float(end[2])
+
+    elem_type = elem_data.get("type", "")
+
+    if elem_type == "Column":
+        xi = snap_idx(sx, x_coords_mm)
+        yi = snap_idx(sy, y_coords_mm)
+        fl = floor_num(ez)
+        gx = grid_x_labels[xi] if 0 <= xi < len(grid_x_labels) else "?"
+        gy = grid_y_labels[yi] if 0 <= yi < len(grid_y_labels) else "?"
+        return "{}-{}/{}".format(gy, gx, fl)
+
+    elif elem_type == "Beam":
+        fl = floor_num(sz)
+        dx = abs(ex - sx)
+        dy = abs(ey - sy)
+
+        if dx >= dy:
+            # Arah X (X bervariasi, Y konstan)
+            yi   = snap_idx(sy, y_coords_mm)
+            xi_s = snap_idx(sx, x_coords_mm)
+            xi_e = snap_idx(ex, x_coords_mm)
+            if xi_s > xi_e:
+                xi_s, xi_e = xi_e, xi_s
+            gy   = grid_y_labels[yi]   if 0 <= yi   < len(grid_y_labels) else "?"
+            gx_s = grid_x_labels[xi_s] if 0 <= xi_s < len(grid_x_labels) else "?"
+            gx_e = grid_x_labels[xi_e] if 0 <= xi_e < len(grid_x_labels) else "?"
+            return "{}/{}-{}/{}".format(gy, gx_s, gx_e, fl)
+        else:
+            # Arah Y (Y bervariasi, X konstan)
+            xi   = snap_idx(sx, x_coords_mm)
+            yi_s = snap_idx(sy, y_coords_mm)
+            yi_e = snap_idx(ey, y_coords_mm)
+            if yi_s > yi_e:
+                yi_s, yi_e = yi_e, yi_s
+            gx   = grid_x_labels[xi]   if 0 <= xi   < len(grid_x_labels) else "?"
+            gy_s = grid_y_labels[yi_s] if 0 <= yi_s < len(grid_y_labels) else "?"
+            gy_e = grid_y_labels[yi_e] if 0 <= yi_e < len(grid_y_labels) else "?"
+            return "{}-{}/{}/{}".format(gy_s, gy_e, gx, fl)
+
+    else:
+        return "?-?/?"
+
+
+def create_revit_grids(doc, x_coords_mm, y_coords_mm, grid_x_labels, grid_y_labels,
+                       extra_extend_ft=7.0):
+    """
+    Buat Revit Grid elements dari koordinat grid (dalam mm).
+      - Grid vertikal (label angka "1","2",...) : garis di X=konstan, memanjang arah Y
+      - Grid horizontal (label huruf "A","B",...): garis di Y=konstan, memanjang arah X
+
+    Harus dipanggil di dalam Transaction yang aktif.
+
+    Langkah internal:
+      1. Rename + delete semua grid yang masih ada (unpin dulu) → bebaskan namespace
+      2. Buat grid baru dari koordinat yang diberikan
+      3. Set nama dengan guard 'if g.Name != label' untuk menghindari konflik auto-name
+    """
+    if not x_coords_mm or not y_coords_mm:
+        print("  ⚠️ Grid: koordinat kosong, dilewati")
+        return
+
+    # --- 1. Bersihkan grid yang masih ada ---
+    existing_grids = (FilteredElementCollector(doc)
+                      .OfCategory(BuiltInCategory.OST_Grids)
+                      .WhereElementIsNotElementType()
+                      .ToElements())
+    if existing_grids:
+        # Unpin + rename ke temp name agar namespace bebas
+        for idx, eg in enumerate(existing_grids):
+            try:
+                eg.Pinned = False
+            except Exception:
+                pass
+            try:
+                eg.Name = "__roida_tmp_{}__".format(idx)
+            except Exception:
+                pass
+        # Hapus
+        del_ids = List[ElementId]()
+        for eg in existing_grids:
+            del_ids.Add(eg.Id)
+        try:
+            doc.Delete(del_ids)
+            print("  Cleaned {} existing grid(s)".format(del_ids.Count))
+        except Exception as e_del:
+            print("  ⚠️ Grid cleanup warning: {}".format(str(e_del)))
+
+    # --- 2. Hitung batas ekstensi (dalam ft) ---
+    x_ft_list = [mm_to_ft(x) for x in x_coords_mm]
+    y_ft_list  = [mm_to_ft(y) for y in y_coords_mm]
+
+    min_x = min(x_ft_list) - extra_extend_ft
+    max_x = max(x_ft_list) + extra_extend_ft
+    min_y = min(y_ft_list) - extra_extend_ft
+    max_y = max(y_ft_list) + extra_extend_ft
+
+    created = 0
+
+    # Kumpulkan semua 3D view untuk set DatumExtentType.Model
+    _views_3d = [v for v in FilteredElementCollector(doc).OfClass(View3D).ToElements()
+                 if not v.IsTemplate]
+
+    def _set_grid_extent(g, creation_line):
+        """Extend grid curve di semua 3D view via SetCurveInView agar menembus garis level."""
+        try:
+            sp = creation_line.GetEndPoint(0)
+            ep = creation_line.GetEndPoint(1)
+            d  = (ep - sp).Normalize()
+            ext = 50.0  # feet — cukup jauh agar menembus datum level
+            new_line = Line.CreateBound(sp - d * ext, ep + d * ext)
+            for _v in _views_3d:
+                try:
+                    g.SetCurveInView(DatumExtentType.Model, _v, new_line)
+                except Exception:
+                    pass
+        except Exception as e_ext:
+            print("  ⚠️ Grid SetCurveInView error: {}".format(str(e_ext)))
+
+    # --- 3a. Grid vertikal: di X=konstan, label angka ---
+    for x_ft, label in zip(x_ft_list, grid_x_labels):
+        try:
+            line = Line.CreateBound(XYZ(x_ft, min_y, 0.0), XYZ(x_ft, max_y, 0.0))
+            g = Grid.Create(doc, line)
+            # Guard: hindari exception "name already in use" jika Revit auto-assign sama
+            if g.Name != label:
+                g.Name = label
+            _set_grid_extent(g, line)
+            created += 1
+        except Exception as e_g:
+            print("  ⚠️ Grid X='{}' error: {}".format(label, str(e_g)))
+
+    # --- 3b. Grid horizontal: di Y=konstan, label huruf ---
+    for y_ft, label in zip(y_ft_list, grid_y_labels):
+        try:
+            line = Line.CreateBound(XYZ(min_x, y_ft, 0.0), XYZ(max_x, y_ft, 0.0))
+            g = Grid.Create(doc, line)
+            if g.Name != label:
+                g.Name = label
+            _set_grid_extent(g, line)
+            created += 1
+        except Exception as e_g:
+            print("  ⚠️ Grid Y='{}' error: {}".format(label, str(e_g)))
+
+    print("  ✅ Grid elements: {} dibuat".format(created))
+
+
 def get_element_data(element, doc):
     # 1. Format Nama Family & Type
     # Target: "FamilyName : TypeName" (Contoh: "UC-Universal Columns : UC305x305x97")
@@ -1649,16 +1884,27 @@ def get_element_data(element, doc):
         "id": element.Id.IntegerValue,
         "type": elem_type_str,
         "group": determine_group(element),
-        "family": full_display_name, 
+        "family": full_display_name,
         "section": section_props,
         "material": material_props,
         "topology": topology_data,
         "local_axes": get_local_axes(element, doc),
-        
+
         # AISC 360-22 Design Parameters (SRPMB/OMF)
         # K factor dan Cb dihitung di Engine, section classification juga di Engine
         "design_parameters": get_design_parameters(elem_type_str, topology_data)
     }
+
+    # 4b. Hitung label_name (grid label) — pakai koordinat global yang sudah dihitung
+    try:
+        data["label_name"] = assign_label_name(
+            data,
+            _GRID_X_COORDS_MM, _GRID_Y_COORDS_MM, _Z_LEVELS_MM,
+            GRID_X_LABELS, GRID_Y_LABELS
+        )
+    except Exception as e_lbl:
+        data["label_name"] = "?"
+        print("  ⚠️ label_name error id={}: {}".format(data["id"], str(e_lbl)))
     
     # 5. Hitung Beban (Khusus Beam)
     # Pastikan topology sudah Integer (hasil revisi sebelumnya)
@@ -1677,7 +1923,10 @@ def get_element_data(element, doc):
 # MAIN EXECUTION (TRANSACTION)
 # ===================================================
 cols_to_process, created_ids = [], []
-_FAB_COL_MAP = {}  # Mapping: revit_element_id -> (fab_base_idx, fab_top_idx)
+_FAB_COL_MAP     = {}   # Mapping: revit_element_id -> (fab_base_idx, fab_top_idx)
+_SEC_BEAM_PARENTS = {}  # Mapping: secondary_elem_id (int) -> [parent1_id (int), parent2_id (int)]
+_BEAMX_BY_INDEX  = {}   # (j_grid, i_bay, floor_k) -> element_id int  (X-dir primary beams)
+_BEAMY_BY_INDEX  = {}   # (i_grid, j_bay, floor_k) -> element_id int  (Y-dir primary beams)
 
 # === PRE-TRANSACTION: Overwrite Lookup Tables ===
 print("\n🔧 Preparing Custom Sections...")
@@ -1685,7 +1934,12 @@ try:
     # Collect unique sections needed for beams and columns
     beam_sections = {}
     col_sections = {}
-    for sec_name in [SECTION_BEAM_EXT, SECTION_BEAM_INT]:
+    _sec_beam_names = [SECTION_BEAM_EXT, SECTION_BEAM_INT]
+    if SECONDARY_BEAM_CONFIG.get("enabled", False):
+        _sb_sec = SECONDARY_BEAM_CONFIG.get("section", "")
+        if _sb_sec and _sb_sec not in _sec_beam_names:
+            _sec_beam_names.append(_sb_sec)
+    for sec_name in _sec_beam_names:
         if sec_name in SECTIONS:
             beam_sections[sec_name] = SECTIONS[sec_name]
     for sec_name in [SECTION_COL]:
@@ -1721,19 +1975,22 @@ try:
         # Menggunakan string agar aman untuk berbagai versi Revit (2022/2023/2024).
         categories_to_clean = [
             # --- ELEMEN FISIK ---
-            "OST_StructuralColumns", 
+            "OST_StructuralColumns",
             "OST_StructuralFraming",
-            
+
+            # --- GRID ---
+            "OST_Grids",
+
             # --- ELEMEN ANALITIK (Revit 2023+) ---
-            "OST_AnalyticalMember", 
-            "OST_AnalyticalPanel", 
-            "OST_AnalyticalNodes", 
+            "OST_AnalyticalMember",
+            "OST_AnalyticalPanel",
+            "OST_AnalyticalNodes",
             "OST_AnalyticalLinks",
-            
+
             # --- ELEMEN ANALITIK (Legacy / Revit Lama) ---
-            "OST_AnalyticalBeams", 
+            "OST_AnalyticalBeams",
             "OST_AnalyticalColumns",
-            "OST_AnalyticalFloors", 
+            "OST_AnalyticalFloors",
             "OST_AnalyticalWalls"
         ]
 
@@ -1830,6 +2087,10 @@ try:
 
         doc.Regenerate()
 
+        # NOTE: Grid creation (step 2.5) has been moved to AFTER column creation
+        # so that actual column positions can be used as grid coordinates.
+        # See step 3b below.
+
         # 3. GEOMETRY BUILD (CENTERED AT ORIGIN 0,0,0)
         # === CREATE/GET MATERIALS ===
         print("\n🔧 Creating Materials...")
@@ -1859,14 +2120,33 @@ try:
         col_sym = find_structural_family(BuiltInCategory.OST_StructuralColumns, SECTION_COL)
         beam_ext_sym = find_structural_family(BuiltInCategory.OST_StructuralFraming, SECTION_BEAM_EXT)
         beam_int_sym = find_structural_family(BuiltInCategory.OST_StructuralFraming, SECTION_BEAM_INT)
-        
+
         if not col_sym.IsActive: col_sym.Activate()
         if not beam_ext_sym.IsActive: beam_ext_sym.Activate()
         if not beam_int_sym.IsActive: beam_int_sym.Activate()
-        
+
         print("  Column:       {} ({})".format(col_sym.Name, col_sym.FamilyName))
         print("  Beam Ext:     {} ({})".format(beam_ext_sym.Name, beam_ext_sym.FamilyName))
         print("  Beam Int:     {} ({})".format(beam_int_sym.Name, beam_int_sym.FamilyName))
+
+        # Secondary beam symbol (only loaded when enabled)
+        beam_sec_sym = None
+        mat_beam_sec = None
+        if SECONDARY_BEAM_CONFIG.get("enabled", False):
+            _sb_sec_name = SECONDARY_BEAM_CONFIG.get("section", "IWF200x100x5.5x8")
+            _sb_mat_name = SECONDARY_BEAM_CONFIG.get("material", "BJ 41")
+            try:
+                beam_sec_sym = find_structural_family(BuiltInCategory.OST_StructuralFraming, _sb_sec_name)
+                if not beam_sec_sym.IsActive:
+                    beam_sec_sym.Activate()
+                print("  Beam Sec:     {} ({})".format(beam_sec_sym.Name, beam_sec_sym.FamilyName))
+            except Exception as _e_bsec:
+                beam_sec_sym = beam_ext_sym  # fallback
+                print("  Beam Sec: fallback to Beam Ext ({})".format(str(_e_bsec)))
+            try:
+                mat_beam_sec = create_or_get_material(doc, _sb_mat_name, MATERIALS[_sb_mat_name])
+            except Exception:
+                mat_beam_sec = mat_beam_ext  # fallback
         
         # === SET MATERIAL ON FAMILY SYMBOLS (TYPE LEVEL) ===
         for sym, mat, label in [(col_sym, mat_col, "Column"), 
@@ -1950,7 +2230,26 @@ try:
         # Simpan fab_segments sebagai global untuk dipakai saat JSON export
         _FAB_SEGMENTS = fab_segments
         _FAB_COL_MAP = {}  # Mapping: revit_element_id -> (fab_base_idx, fab_top_idx)
-        
+
+        # --- CREATE REVIT GRIDS (sebelum kolom) ---
+        if CREATE_REVIT_GRIDS:
+            print("\n🔧 Creating Revit Grids...")
+            try:
+                create_revit_grids(doc, _GRID_X_COORDS_MM, _GRID_Y_COORDS_MM,
+                                   GRID_X_LABELS, GRID_Y_LABELS)
+                # Verifikasi: hitung grid yang benar-benar ada di dokumen sekarang
+                _grid_verify = (FilteredElementCollector(doc)
+                                .OfCategory(BuiltInCategory.OST_Grids)
+                                .WhereElementIsNotElementType()
+                                .ToElements())
+                _grid_names = [g.Name for g in _grid_verify]
+                print("  Grid OK — verifikasi: {} grid di dokumen: {}".format(
+                    len(_grid_verify), _grid_names))
+            except Exception as e_grid:
+                print("  ⚠️ Grid creation error: {}".format(str(e_grid)))
+        else:
+            print("\nℹ️ CREATE_REVIT_GRIDS=False — Grid elements dilewati")
+
         # --- CREATE COLUMNS PER FABRICATION SEGMENT (menerus) ---
         for seg_base_idx, seg_top_idx in fab_segments:
             base_level = active_levels[seg_base_idx]
@@ -2003,6 +2302,8 @@ try:
                     # Simpan metadata fabrikasi untuk split saat JSON export
                     _FAB_COL_MAP[c.Id.IntegerValue] = (seg_base_idx, seg_top_idx)
         
+        # (Grid sudah dibuat sebelum kolom di atas)
+
         # --- CREATE BEAMS PER STORY (tidak berubah) ---
         for k in range(N_STORY):
             lt = active_levels[k+1]
@@ -2046,8 +2347,10 @@ try:
                 for i in range(BAY_X_COUNT):
                     p_start = get_pt(i, j, z_top)
                     p_end   = get_pt(i+1, j, z_top)
-                    created_ids.append(mk_bm(p_start, p_end, sym, mat, grp))
-            
+                    bx_id = mk_bm(p_start, p_end, sym, mat, grp)
+                    created_ids.append(bx_id)
+                    _BEAMX_BY_INDEX[(j, i, k)] = bx_id.IntegerValue
+
             # Balok Arah Y (Vertikal) — Deteksi Eksterior/Interior
             for i in range(BAY_X_COUNT + 1):
                 is_ext = (i == 0 or i == BAY_X_COUNT)
@@ -2057,7 +2360,48 @@ try:
                 for j in range(BAY_Y_COUNT):
                     p_start = get_pt(i, j, z_top)
                     p_end   = get_pt(i, j+1, z_top)
-                    created_ids.append(mk_bm(p_start, p_end, sym, mat, grp))
+                    by_id = mk_bm(p_start, p_end, sym, mat, grp)
+                    created_ids.append(by_id)
+                    _BEAMY_BY_INDEX[(i, j, k)] = by_id.IntegerValue
+
+            # --- Balok Anak (Secondary Beams) ---
+            if SECONDARY_BEAM_CONFIG.get("enabled", False) and beam_sec_sym is not None:
+                _sb_floors = SECONDARY_BEAM_CONFIG.get("floors", "all")
+                _floor_ok  = (_sb_floors == "all") or ((k + 1) in _sb_floors)
+                if _floor_ok:
+                    _cnt_x = SECONDARY_BEAM_CONFIG.get("count_per_bay_x", 0)
+                    _cnt_y = SECONDARY_BEAM_CONFIG.get("count_per_bay_y", 0)
+                    for _i in range(BAY_X_COUNT):
+                        for _j in range(BAY_Y_COUNT):
+                            # Balok anak arah X: bentang dari X_i ke X_{i+1},
+                            # ditempatkan di n posisi Y dalam bay (_j, _j+1)
+                            for _n in range(1, _cnt_x + 1):
+                                _y_ratio = float(_n) / float(_cnt_x + 1)
+                                _y_ft    = (start_y + _j * span_y_ft
+                                            + _y_ratio * span_y_ft)
+                                _ps = XYZ(start_x + _i * span_x_ft,       _y_ft, z_top)
+                                _pe = XYZ(start_x + (_i + 1) * span_x_ft, _y_ft, z_top)
+                                _sb_id = mk_bm(_ps, _pe, beam_sec_sym, mat_beam_sec, "Secondary")
+                                created_ids.append(_sb_id)
+                                # Parents: Y-dir beams at grid X=_i and X=_i+1 for bay _j
+                                _p1 = _BEAMY_BY_INDEX.get((_i,     _j, k), 0)
+                                _p2 = _BEAMY_BY_INDEX.get((_i + 1, _j, k), 0)
+                                _SEC_BEAM_PARENTS[_sb_id.IntegerValue] = [_p1, _p2]
+
+                            # Balok anak arah Y: bentang dari Y_j ke Y_{j+1},
+                            # ditempatkan di n posisi X dalam bay (_i, _i+1)
+                            for _n in range(1, _cnt_y + 1):
+                                _x_ratio = float(_n) / float(_cnt_y + 1)
+                                _x_ft    = (start_x + _i * span_x_ft
+                                            + _x_ratio * span_x_ft)
+                                _ps = XYZ(_x_ft, start_y + _j * span_y_ft,       z_top)
+                                _pe = XYZ(_x_ft, start_y + (_j + 1) * span_y_ft, z_top)
+                                _sb_id = mk_bm(_ps, _pe, beam_sec_sym, mat_beam_sec, "Secondary")
+                                created_ids.append(_sb_id)
+                                # Parents: X-dir beams at grid Y=_j and Y=_j+1 for bay _i
+                                _p1 = _BEAMX_BY_INDEX.get((_j,     _i, k), 0)
+                                _p2 = _BEAMX_BY_INDEX.get((_j + 1, _i, k), 0)
+                                _SEC_BEAM_PARENTS[_sb_id.IntegerValue] = [_p1, _p2]
         
         # 4. FIX CONSTRAINTS
         doc.Regenerate()
@@ -2127,6 +2471,12 @@ try:
 
 except Exception as e:
     TaskDialog.Show("Error", str(e))
+
+# Refresh active view agar grid langsung terlihat tanpa perlu reload manual
+try:
+    revit.uidoc.RefreshActiveView()
+except Exception:
+    pass
 
 # ============================================================================
 # GENERATE ANALYTICAL MODEL (LOGIKA PRINT TOTAL GABUNGAN)
@@ -2421,78 +2771,89 @@ except Exception as e:
 
 try:
     with revit.Transaction("Fix Analytical Visibility"):
-        view = doc.ActiveView
-        
-        # --- CEK VIEW TEMPLATE ---
-        if view.ViewTemplateId != ElementId.InvalidElementId:
-            print("⚠️ WARNING: View ini dikunci oleh View Template.")
 
-        # -----------------------------------------------------------------------
-        # A. MASTER SWITCH (MENGGUNAKAN REFERENSI ANDA)
-        # -----------------------------------------------------------------------
-        # Kita cek apakah properti 'AreAnalyticalModelCategoriesHidden' tersedia
-        # Jika ya, kita set ke False (artinya: Jangan Sembunyikan = Tampilkan)
-        
-        master_switch_succcess = False
-        
-        try:
-            # Cek ketersediaan properti (Pythonic way untuk C# Property)
-            if hasattr(view, "AreAnalyticalModelCategoriesHidden"):
-                # Cek kondisi sekarang
-                if view.AreAnalyticalModelCategoriesHidden == True:
-                    # ACTION: Set menjadi False untuk MENCENTANG checkbox
-                    view.AreAnalyticalModelCategoriesHidden = False 
-                    print(" -> [Master Switch] Berhasil dicentang (via AreAnalyticalModelCategoriesHidden).")
-                else:
-                    print(" -> [Master Switch] Sudah aktif sebelumnya.")
-                master_switch_succcess = True
-        except Exception as e_prop:
-            print(" -> Info: Akses langsung properti gagal, mencoba metode Parameter fallback.")
+        # Terapkan ke SEMUA 3D view (bukan hanya active view),
+        # sehingga view baru yang dibuat setelah run pun sudah benar.
+        all_3d_views = [v for v in FilteredElementCollector(doc).OfClass(View3D).ToElements()
+                        if not v.IsTemplate]
 
-        # -----------------------------------------------------------------------
-        # B. FALLBACK (JIKA PROPERTI DI ATAS GAGAL/VERSI LAMA)
-        # -----------------------------------------------------------------------
-        if not master_switch_succcess:
-            # Coba akses parameter manual (VG / VIEW_STRUCT)
-            param_names = ['VG_ANALYTICAL_MODEL_VISIBILITY', 'VIEW_STRUCT_ANALYTICAL_MODEL_VISIBILITY']
-            for p_name in param_names:
-                if hasattr(BuiltInParameter, p_name):
-                    p_enum = getattr(BuiltInParameter, p_name)
-                    p = view.get_Parameter(p_enum)
-                    if p and not p.IsReadOnly and p.AsInteger() == 0:
-                        p.Set(1)
-                        print(" -> [Master Switch] Dicentang via Parameter {}.".format(p_name))
-                        break
-
-        # -----------------------------------------------------------------------
-        # C. UNHIDE SUB-KATEGORI (SAFE STRING LOOKUP)
-        # -----------------------------------------------------------------------
-        # Memastikan item di dalam tree (Member, Node, Panel) ikut dicentang
-        
-        target_cat_names = [
-            "OST_AnalyticalMember", "OST_AnalyticalPanel", # Revit 2023+
-            "OST_AnalyticalBeams", "OST_AnalyticalColumns", # Revit Lama
-            "OST_AnalyticalNodes", "OST_AnalyticalLinks",
-            "OST_AnalyticalFloors", "OST_AnalyticalWalls"
+        # Kategori analytical model
+        analytical_cat_names = [
+            "OST_AnalyticalMember", "OST_AnalyticalPanel",   # Revit 2023+
+            "OST_AnalyticalBeams",  "OST_AnalyticalColumns", # Revit lama
+            "OST_AnalyticalNodes",  "OST_AnalyticalLinks",
+            "OST_AnalyticalFloors", "OST_AnalyticalWalls",
         ]
 
-        count = 0
-        for name in target_cat_names:
-            if hasattr(BuiltInCategory, name):
-                cat_enum = getattr(BuiltInCategory, name)
-                try:
-                    cat_id = ElementId(int(cat_enum))
-                    if view.CanCategoryBeHidden(cat_id):
-                        if view.GetCategoryHidden(cat_id):
-                            view.SetCategoryHidden(cat_id, False) # False = Unhide
-                            count += 1
-                except:
-                    pass
+        # Kategori Internal Origin & titik referensi
+        origin_cat_names = [
+            "OST_InternalOrigin",    # Internal Origin (Revit 2022+)
+            "OST_ProjectBasePoint",  # Project Base Point
+            "OST_SharedBasePoint",   # Survey Point
+            "OST_IOS_GeoSite",       # Geographic Site
+        ]
 
-        if count > 0:
-            print(" -> [Sub-Category] {} item dimunculkan.".format(count))
+        def _apply_visibility(view):
+            if view.ViewTemplateId != ElementId.InvalidElementId:
+                return  # dikunci View Template — skip
 
-        print("✅ Pengaturan Tampilan Selesai.")
+            # A. Master switch analytical model
+            try:
+                if hasattr(view, "AreAnalyticalModelCategoriesHidden"):
+                    if view.AreAnalyticalModelCategoriesHidden:
+                        view.AreAnalyticalModelCategoriesHidden = False
+            except Exception:
+                pass
+
+            # B. Fallback parameter
+            try:
+                for p_name in ("VG_ANALYTICAL_MODEL_VISIBILITY",
+                               "VIEW_STRUCT_ANALYTICAL_MODEL_VISIBILITY"):
+                    if hasattr(BuiltInParameter, p_name):
+                        p = view.get_Parameter(getattr(BuiltInParameter, p_name))
+                        if p and not p.IsReadOnly and p.AsInteger() == 0:
+                            p.Set(1)
+                            break
+            except Exception:
+                pass
+
+            # C. Unhide analytical sub-categories
+            for name in analytical_cat_names:
+                if hasattr(BuiltInCategory, name):
+                    try:
+                        cat_id = ElementId(int(getattr(BuiltInCategory, name)))
+                        if view.CanCategoryBeHidden(cat_id) and view.GetCategoryHidden(cat_id):
+                            view.SetCategoryHidden(cat_id, False)
+                    except Exception:
+                        pass
+
+            # D. Aktifkan Internal Origin via parameter VIEWER_DISPLAY_INTERNAL_ORIGIN
+            try:
+                p_origin = view.get_Parameter(BuiltInParameter.VIEWER_DISPLAY_INTERNAL_ORIGIN)
+                if p_origin and not p_origin.IsReadOnly and p_origin.AsInteger() != 1:
+                    p_origin.Set(1)
+            except Exception:
+                pass
+
+            # E. Unhide reference point categories (fallback)
+            for name in origin_cat_names:
+                if hasattr(BuiltInCategory, name):
+                    try:
+                        cat_id = ElementId(int(getattr(BuiltInCategory, name)))
+                        if view.CanCategoryBeHidden(cat_id) and view.GetCategoryHidden(cat_id):
+                            view.SetCategoryHidden(cat_id, False)
+                    except Exception:
+                        pass
+
+        applied = 0
+        for v3d in all_3d_views:
+            try:
+                _apply_visibility(v3d)
+                applied += 1
+            except Exception:
+                pass
+
+        print("✅ Visibility fix diterapkan ke {} 3D view.".format(applied))
 
 except Exception as e:
     print("❌ Gagal mengatur visibility: " + str(e))
@@ -2583,14 +2944,14 @@ try:
                         topo = el_data["topology"]
                         x_coord = topo["start_node"][0]
                         y_coord = topo["start_node"][1]
-                        
+
                         for k_story in range(seg_base_idx, seg_top_idx):
                             import copy
                             story_data = copy.deepcopy(el_data)
-                            
+
                             # Unique ID untuk setiap virtual element
                             story_data["id"] = el_id * 1000 + (k_story - seg_base_idx + 1)
-                            
+
                             # Topology per-story (level murni tanpa offset)
                             z_base = _level_elevs_mm[k_story]
                             z_top = _level_elevs_mm[k_story + 1]
@@ -2599,11 +2960,21 @@ try:
                                 "end_node": [x_coord, y_coord, z_top],
                                 "length_mm": z_top - z_base
                             }
-                            
+
                             # Update design parameters for this story height
                             story_data["design_parameters"] = get_design_parameters(
                                 "Column", story_data["topology"])
-                            
+
+                            # Update label_name dengan floor number yang benar
+                            try:
+                                story_data["label_name"] = assign_label_name(
+                                    story_data,
+                                    _GRID_X_COORDS_MM, _GRID_Y_COORDS_MM, _Z_LEVELS_MM,
+                                    GRID_X_LABELS, GRID_Y_LABELS
+                                )
+                            except Exception:
+                                pass  # tetap pakai label dari deepcopy
+
                             final_elements_list.append(story_data)
                         
                         print("  Column {} split: {} stories (Level {}->{})".format(
@@ -2630,8 +3001,30 @@ try:
         except Exception as e_item:
             print("Skip Element ID {}: {}".format(el.Id, str(e_item)))
 
+    # --- C2. ATTACH parent_beams TO SECONDARY BEAM ELEMENTS ---
+    # Build id->label_name lookup from final list
+    if _SEC_BEAM_PARENTS:
+        _id_to_lbl = {e["id"]: e.get("label_name", "?") for e in final_elements_list}
+        for elem in final_elements_list:
+            if elem.get("group") == "Secondary":
+                parent_ids = _SEC_BEAM_PARENTS.get(elem["id"], [])
+                elem["parent_beams"] = [
+                    {"id": pid, "label_name": _id_to_lbl.get(pid, "?")}
+                    for pid in parent_ids if pid
+                ]
+
     # --- D. SAVE JSON (STRUKTUR FINAL) ---
     final_output = {
+        # Grid System (label referensi elemen)
+        "grid_system": {
+            "x_labels":      GRID_X_LABELS,
+            "y_labels":      GRID_Y_LABELS,
+            "x_coords_mm":   _GRID_X_COORDS_MM,
+            "y_coords_mm":   _GRID_Y_COORDS_MM,
+            "floor_labels":  [str(k) for k in range(int(N_STORY) + 1)],
+            "z_levels_mm":   _Z_LEVELS_MM,
+        },
+
         # Load Patterns (SAP2000-like)
         "load_patterns": LOAD_PATTERNS,
         
@@ -2651,6 +3044,16 @@ try:
         "slab_sw_pressure": SLAB_SW_PRESSURE,
         "slab_adl_pressure": SLAB_ADL_PRESSURE,
         "live_load_pressure": LIVE_LOAD_PRESSURE,
+        
+        # Shell plate slab configuration
+        "slab_plate": {
+            "enabled": SLAB_PLATE_ENABLED,
+            "E_MPa": SLAB_PLATE_E_MPA,
+            "nu": SLAB_PLATE_NU,
+            "rho_kg_m3": SLAB_PLATE_RHO_KG_M3,
+            "thickness_mm": SLAB_THICKNESS,
+            "mesh_size_mm": SLAB_PLATE_MESH_SIZE_MM,
+        },
         
         # Seismic Parameters (SNI 1726)
         "seismic_parameters": {
@@ -3199,8 +3602,46 @@ if json_success:
                         # === MERGE: Gabungkan Model data + Analysis → Result.json ===
                         merge_to_result_json(OUTPUT_PATH, ANALYSIS_JSON_PATH, MERGED_RESULT_PATH, HEIGHT_MM)
 
+                        # === BUILD label_name LOOKUP dari Model data.json ===
+                        _elem_label_lookup = {}   # {str(elem_id): label_name}
+                        try:
+                            with open(OUTPUT_PATH, 'r') as _f_md:
+                                _md = json.load(_f_md)
+                            for _me in _md.get("model_elements", []):
+                                _eid = str(_me.get("id", ""))
+                                _lbl = _me.get("label_name", "")
+                                if _eid and _lbl:
+                                    _elem_label_lookup[_eid] = _lbl
+                        except Exception:
+                            pass  # lookup tetap kosong, tidak apa-apa
+
                         out.print_md("# 📑 LAPORAN HASIL ANALISIS STRUKTUR")
-                                                # Build dynamic load case list from Analysis.json keys
+
+                        # ================================================================
+                        # TAMPILKAN FREKUENSI NATURAL STRUKTUR (_modal)
+                        # ================================================================
+                        _modal = all_results.get('_modal', {})
+                        if _modal and _modal.get('status') == 'Success':
+                            _modes = _modal.get('modes', [])
+                            _ta = Ta  # Ta empiris dari config
+                            out.print_md("## Frekuensi Natural Struktur")
+                            if _modes:
+                                _modal_rows = []
+                                for _m in _modes[:6]:  # tampilkan maks 6 mode
+                                    _mno = _m.get('mode', '-')
+                                    _T   = round(_m.get('period_s', 0), 4)
+                                    _f   = round(_m.get('frequency_Hz', 0), 4)
+                                    _vs_ta = "{:.3f} s (Ta empiris)".format(_ta) if _mno == 1 else ""
+                                    _modal_rows.append([_mno, _T, _f, _vs_ta])
+                                print_center_table(
+                                    output=out,
+                                    data=_modal_rows,
+                                    columns=["Mode", "T (s)", "f (Hz)", "Keterangan"],
+                                    title="Periode & Frekuensi Natural (Ta empiris = {:.3f} s)".format(_ta)
+                                )
+                        # ================================================================
+
+                        # Build dynamic load case list from Analysis.json keys
                         gravity_keys = [k for k in all_results.keys() 
                                        if not k.startswith('_') 
                                        and k not in ('SeismicX', 'SeismicY')
@@ -3268,20 +3709,25 @@ if json_success:
                                         # (Artinya node ini adalah ujung balok/kolom asli, bukan pecahan tengah)
                                         if check_coords in valid_node_coords:
                                             data_disp.append([
-                                                nid, 
-                                                check_coords[0], check_coords[1], check_coords[2], 
-                                                round(d[2], 2) # Defleksi Z
+                                                nid,
+                                                check_coords[0], check_coords[1], check_coords[2],
+                                                "{:.5f}".format(d[0]),
+                                                "{:.5f}".format(d[1]),
+                                                "{:.5f}".format(d[2]),
+                                                "{:.5f}".format(d[3]),
+                                                "{:.5f}".format(d[4]),
+                                                "{:.5f}".format(d[5])
                                             ])
-                                    
+
                                     # Sort berdasarkan ID Node
                                     data_disp.sort(key=lambda x: int(x[0]))
-                                    
+
                                     if data_disp:
                                         print_center_table(
                                             output=out,
                                             data=data_disp,
-                                            columns=["Node ID", "X", "Y", "Z", "Defleksi Z (mm)"],
-                                            title="Lendutan Vertikal Node Utama ({})".format(case_key)
+                                            columns=["Node ID", "X", "Y", "Z", "U1 (mm)", "U2 (mm)", "U3 (mm)", "R1 (rad)", "R2 (rad)", "R3 (rad)"],
+                                            title="Perpindahan Node Utama ({})".format(case_key)
                                         )
                                     else:
                                         out.print_md("> _Tidak ada node utama yang terdeteksi cocok dengan hasil analisis._")
@@ -3367,46 +3813,54 @@ if json_success:
                                                 # Fallback: No stations data (old format or error)
                                                 continue
                                             
-                                            # Process each station
+                                            # --- UPDATE STATS from ALL stations ---
+                                            _lbl_name = _elem_label_lookup.get(str(eid), "")
+                                            id_display = "[{}] {}{}".format(
+                                                eid, elem_name,
+                                                " ({})".format(_lbl_name) if _lbl_name else ""
+                                            )
                                             for station_data in stations:
-                                                station_loc = station_data.get('station', 0.0)
-                                                p_val = station_data.get('P', 0.0)
-                                                fy_val = station_data.get('Fy', 0.0)  # V2: shear in local Y
-                                                fz_val = station_data.get('Fz', 0.0)  # V3: shear in local Z
-                                                t_val = station_data.get('T', 0.0)
-                                                my_val = station_data.get('My', 0.0)  # M2: moment about local Y
-                                                mz_val = station_data.get('Mz', 0.0)  # M3: moment about local Z
-
-                                                # --- UPDATE STATISTIK MAKSIMUM & MINIMUM ---
-                                                id_display = "[{}] {}".format(eid, elem_name)
                                                 current_vals = {
-                                                    "P": p_val, "V2": fy_val, "V3": fz_val, 
-                                                    "T": t_val, "M2": my_val, "M3": mz_val
+                                                    "P": station_data.get('P', 0.0),
+                                                    "V2": station_data.get('Fy', 0.0),
+                                                    "V3": station_data.get('Fz', 0.0),
+                                                    "T": station_data.get('T', 0.0),
+                                                    "M2": station_data.get('My', 0.0),
+                                                    "M3": station_data.get('Mz', 0.0)
                                                 }
-                                                
                                                 for k in components:
                                                     val_comp = current_vals[k]
-                                                    # Update Max
                                                     if val_comp > stats[k]["max"]:
                                                         stats[k]["max"] = val_comp
                                                         stats[k]["max_id"] = id_display
-                                                    # Update Min
                                                     if val_comp < stats[k]["min"]:
                                                         stats[k]["min"] = val_comp
                                                         stats[k]["min_id"] = id_display
 
-                                                # --- MASUKKAN KE LIST TABEL ---
-                                                data_elem.append([
-                                                    str(eid),
-                                                    elem_name,
-                                                    "{:.2f}".format(station_loc),  # Station location
-                                                    round(p_val, 2),
-                                                    round(fy_val, 2),
-                                                    round(fz_val, 2),
-                                                    round(t_val, 2),
-                                                    round(my_val, 2),
-                                                    round(mz_val, 2)
-                                                ])
+                                            # --- DISPLAY only at target stations ---
+                                            display_targets = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
+                                            _lbl = _elem_label_lookup.get(str(eid), "-")
+                                            for target in display_targets:
+                                                best = None
+                                                best_diff = 1e9
+                                                for sd in stations:
+                                                    diff = abs(sd.get('station', 0.0) - target)
+                                                    if diff < best_diff:
+                                                        best_diff = diff
+                                                        best = sd
+                                                if best and best_diff < 0.03:
+                                                    data_elem.append([
+                                                        str(eid),
+                                                        _lbl,
+                                                        elem_name,
+                                                        "{:.3f}".format(target),
+                                                        round(best.get('P', 0.0), 2),
+                                                        round(best.get('Fy', 0.0), 2),
+                                                        round(best.get('Fz', 0.0), 2),
+                                                        round(best.get('T', 0.0), 2),
+                                                        round(best.get('My', 0.0), 2),
+                                                        round(best.get('Mz', 0.0), 2)
+                                                    ])
                                         
                                         except Exception as e_inner:
                                             # Jika terjadi error konversi ID (misal ID string aneh), skip saja
@@ -3420,7 +3874,7 @@ if json_success:
                                         print_center_table(
                                             output=out,
                                             data=data_elem,
-                                            columns=["ID", "Family & Type", "Station", "P (N)", "V2 (N)", "V3 (N)", "T (Nmm)", "M2 (Nmm)", "M3 (Nmm)"],
+                                            columns=["ID", "Label", "Family & Type", "Station", "P (N)", "V2 (N)", "V3 (N)", "T (Nmm)", "M2 (Nmm)", "M3 (Nmm)"],
                                             title="Detail Gaya Dalam Elemen Asli ({})".format(case_key)
                                         )
                                     else:
@@ -3483,7 +3937,8 @@ if json_success:
                                                 
                                                 elem_type = val.get('element_type', 'Unknown')
                                                 elem_name_short = el.Name
-                                                
+                                                _lbl_d = _elem_label_lookup.get(str(eid), "-")
+
                                                 # Get max_deflection data
                                                 max_defl = val.get('max_deflection', None)
                                                 if max_defl:
@@ -3493,15 +3948,16 @@ if json_success:
                                                     dz_max = max_defl.get('delta_z_max_mm', 0.0)
                                                     dz_station = max_defl.get('delta_z_station', 0.0)
                                                     dz_dist = max_defl.get('delta_z_distance_mm', 0.0)
-                                                    
+
                                                     deflection_data.append([
                                                         str(eid),
+                                                        _lbl_d,
                                                         elem_type,
                                                         elem_name_short,
-                                                        "{:.4f}".format(dy_max),
+                                                        "{:.5f}".format(dy_max),
                                                         "{:.3f}".format(dy_station),
                                                         "{:.0f}".format(dy_dist),
-                                                        "{:.4f}".format(dz_max),
+                                                        "{:.5f}".format(dz_max),
                                                         "{:.3f}".format(dz_station),
                                                         "{:.0f}".format(dz_dist)
                                                     ])
@@ -3513,18 +3969,19 @@ if json_success:
                                         print_center_table(
                                             output=out,
                                             data=deflection_data,
-                                            columns=["ID", "Type", "Section", "δy Max (mm)", "Station Y", "Dist Y (mm)", "δz Max (mm)", "Station Z", "Dist Z (mm)"],
+                                            columns=["ID", "Label", "Type", "Section", "δy Max (mm)", "Station Y", "Dist Y (mm)", "δz Max (mm)", "Station Z", "Dist Z (mm)"],
                                             title="📐 Defleksi Maksimum Elemen ({})".format(case_key)
                                         )
-                                        
+
                                         # Find overall max deflection
-                                        max_dy_elem = max(deflection_data, key=lambda x: abs(float(x[3])))
-                                        max_dz_elem = max(deflection_data, key=lambda x: abs(float(x[6])))
+                                        # row indices shifted by 1 (label inserted at index 1)
+                                        max_dy_elem = max(deflection_data, key=lambda x: abs(float(x[4])))
+                                        max_dz_elem = max(deflection_data, key=lambda x: abs(float(x[7])))
                                         out.print_md("**Defleksi Maksimum Overall:**")
-                                        out.print_md("  - **δy max:** {} mm @ ID {} (station {}, dist {} mm)".format(
-                                            max_dy_elem[3], max_dy_elem[0], max_dy_elem[4], max_dy_elem[5]))
-                                        out.print_md("  - **δz max:** {} mm @ ID {} (station {}, dist {} mm)".format(
-                                            max_dz_elem[6], max_dz_elem[0], max_dz_elem[7], max_dz_elem[8]))
+                                        out.print_md("  - **δy max:** {} mm @ {} / ID {} (station {}, dist {} mm)".format(
+                                            max_dy_elem[4], max_dy_elem[1], max_dy_elem[0], max_dy_elem[5], max_dy_elem[6]))
+                                        out.print_md("  - **δz max:** {} mm @ {} / ID {} (station {}, dist {} mm)".format(
+                                            max_dz_elem[7], max_dz_elem[1], max_dz_elem[0], max_dz_elem[8], max_dz_elem[9]))
 
                             else:
                                 out.print_md("❌ **Analisis Gagal**")
