@@ -102,7 +102,7 @@ SECTION_BEAM_INT = "IWF303.4x165x6x10.2"       # Balok Interior
 
 # Balok anak
 SECONDARY_BEAM_CONFIG = {
-    "enabled":         False,       # True = aktif di seluruh pipeline
+    "enabled":         True,       # True = aktif di seluruh pipeline
     "count_per_bay_x": 1,          # Jumlah balok anak arah X per bay
     "count_per_bay_y": 0,          # Jumlah balok anak arah Y per bay
     "section":         "IWF200x100x5.5x8",
@@ -136,7 +136,7 @@ MATERIAL_BEAM_INT = "BJ 41"
 # ═══════════════════════════════════════════════════════════════
 
 # Tipe tumpuan dasar kolom: "Fixed" | "Pinned" | "Roller"
-SUPPORT_TYPE = "Pinned"
+SUPPORT_TYPE = "Fixed"
 
 # (auto-resolved)
 _SUPPORT_DOF_MAP = {
