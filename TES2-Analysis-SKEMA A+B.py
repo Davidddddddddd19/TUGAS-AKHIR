@@ -1346,9 +1346,8 @@ def run_load_case(data, case_type, pattern_def=None):
                     })
             else:
                 # COLUMNS: Hermite shape function interpolation from nodal displacements
-                # SAP2000 default: minimum 3 output stations (0, 0.5, 1.0)
-                # Use 5 stations to match SAP2000's typical column output resolution
-                sample_ratios = [0.0, 0.25, 0.5, 0.75, 1.0]
+                # 21 stations (every 0.05L) for accurate peak position detection
+                sample_ratios = [i / 20.0 for i in range(21)]
                 n1, n2 = item['nodes']
                 A = float(sec.get('Area_mm2', 0))
                 G = float(mat.get('G_MPa', 78846))
@@ -1432,14 +1431,11 @@ def run_load_case(data, case_type, pattern_def=None):
             subs = sub_elements_map.get(eid)
 
             # Beams (multi-sub-element) use finer grid matching n_stations.
-            # Columns (single element) use 9 stations for smooth Visualizer curve
-            # (cubic spline needs >=7 points to avoid overshoot artifacts).
-            # Note: get_max_deflection uses its own 5-station sampling so the
-            # reported peak stays at midspan for SAP2000 compatibility.
+            # Columns (single element) use 21 stations matching get_max_deflection.
             if subs and len(subs) > 1:
                 sample_ratios = [i / float(n_stations - 1) for i in range(n_stations)]
             else:
-                sample_ratios = [i / 8.0 for i in range(9)]  # 0, 0.125, ..., 1.0
+                sample_ratios = [i / 20.0 for i in range(21)]
 
             stations_ratio = []
             dy_mm = []
