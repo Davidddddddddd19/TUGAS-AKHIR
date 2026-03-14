@@ -266,7 +266,10 @@ def _cubic_spline_resample(xp, yp, n_out=51):
 
 
 def draw_diagram(ax, x_mm, values, ylabel, color_key, smooth=True):
-    """Draw one force/deflection diagram on the given Axes. Returns max abs value."""
+    """Draw one force/deflection diagram on the given Axes.
+
+    Returns (v_max, x_at_max) — the extreme value and its position in mm.
+    """
     line_col, fill_col = _DIAGRAM_COLORS[color_key]
     ax.set_facecolor("#FAFAFA")
     ax.axhline(0, color="#888", linewidth=0.8, linestyle="--", zorder=1)
@@ -276,9 +279,9 @@ def draw_diagram(ax, x_mm, values, ylabel, color_key, smooth=True):
                 transform=ax.transAxes, fontsize=8, color="#999")
         ax.set_ylabel(ylabel, fontsize=7)
         ax.tick_params(axis="both", labelsize=7)
-        return 0.0
+        return 0.0, 0.0
 
-    # Smooth deflection curves (beams only; columns use straight segments)
+    # Smooth deflection curves
     if color_key == "Defl" and len(x_mm) >= 3 and smooth:
         x_plot, v_plot = _cubic_spline_resample(x_mm, values, 51)
     else:
@@ -287,12 +290,14 @@ def draw_diagram(ax, x_mm, values, ylabel, color_key, smooth=True):
     ax.plot(x_plot, v_plot, color=line_col, linewidth=1.8, zorder=3)
     ax.fill_between(x_plot, 0, v_plot, color=fill_col, alpha=0.55, zorder=2)
 
-    v_max = max(values, key=abs)
+    # When multiple stations share the same max, pick the last one (end of span)
+    idx_max = max(range(len(values)), key=lambda i: (abs(values[i]), i))
+    v_max = values[idx_max]
+    x_at_max = x_mm[idx_max]
     if abs(v_max) > 1e-9:
-        idx_max = values.index(v_max)
         offset  = (6, 5) if v_max >= 0 else (6, -14)
         ax.annotate("{:.3f}".format(v_max),
-                    xy=(x_mm[idx_max], v_max),
+                    xy=(x_at_max, v_max),
                     xytext=offset, textcoords="offset points",
                     fontsize=7, color=line_col,
                     arrowprops=dict(arrowstyle="-", color=line_col, lw=0.4))
@@ -309,7 +314,7 @@ def draw_diagram(ax, x_mm, values, ylabel, color_key, smooth=True):
     if color_key in ("BMD", "Defl"):
         ax.invert_yaxis()
 
-    return v_max
+    return v_max, x_at_max
 
 
 # ===================================================================
@@ -404,7 +409,7 @@ class DiagramPanel(QFrame):
 
         self.figure.clear()
         ax = self.figure.add_subplot(1, 1, 1)
-        v_max = draw_diagram(ax, x_mm, values, ylabel, self.color_key, smooth)
+        v_max, x_at_max = draw_diagram(ax, x_mm, values, ylabel, self.color_key, smooth)
         self.figure.subplots_adjust(left=0.14, right=0.97, top=0.92, bottom=0.22)
 
         # Pre-create crosshair artists (hidden)
@@ -425,7 +430,7 @@ class DiagramPanel(QFrame):
             self.lbl_info.setStyleSheet(
                 "font-size:8pt; color:{}; font-weight:bold; "
                 "background:transparent; padding-top:4px;".format(line_col))
-            text = "Max:\n{:.3f}\n{}".format(v_max, ylabel)
+            text = "Max:\n{:.3f}\n{}\nat {:.0f} mm".format(v_max, ylabel, x_at_max)
             if extra_info:
                 text += "\n" + extra_info
             self.lbl_info.setText(text)
@@ -751,14 +756,6 @@ class VisualizerWindow(QMainWindow):
         else:
             dir_note = ""
         d = [abs(v) for v in d]
-        is_column = get_element_type(self.analysis, eid_str) == "Column"
-
-        # Column: triangular tent using max_deflection from Result.json
-        if is_column and md:
-            d_peak = abs(md.get(defl_prefix + "_max_mm", 0.0))
-            d_x    = md.get(defl_prefix + "_distance_mm", L_mm / 2.0)
-            xd = [0.0, d_x, L_mm]
-            d  = [0.0, d_peak, 0.0]
 
         s_tag = "(Major)" if axis == "Major" else "(Minor)"
         s_ylabel = "{} (kN)".format(shear_key)
@@ -768,7 +765,7 @@ class VisualizerWindow(QMainWindow):
         draw_diagram(axes[0], x_mm,  shear,  s_ylabel, "SFD")
         draw_diagram(axes[1], x_mm,  moment, m_ylabel, "BMD")
         draw_diagram(axes[2], x_mm,  axial,  "P (kN)",  "NFD")
-        draw_diagram(axes[3], xd,    d,      d_ylabel,  "Defl", smooth=not is_column)
+        draw_diagram(axes[3], xd,    d,      d_ylabel,  "Defl")
         axes[0].set_title("SFD {}".format(s_tag), fontsize=9, fontweight="bold")
         axes[1].set_title("BMD {}".format(s_tag), fontsize=9, fontweight="bold")
         axes[2].set_title("NFD (Axial)", fontsize=9, fontweight="bold")
@@ -980,14 +977,6 @@ class VisualizerWindow(QMainWindow):
         else:
             dir_note = ""
         d = [abs(v) for v in d]
-        is_column = get_element_type(self.analysis, eid_str) == "Column"
-
-        # Column: triangular tent using max_deflection from Result.json
-        if is_column and md:
-            d_peak = abs(md.get(defl_prefix + "_max_mm", 0.0))
-            d_x    = md.get(defl_prefix + "_distance_mm", L_mm / 2.0)
-            xd = [0.0, d_x, L_mm]
-            d  = [0.0, d_peak, 0.0]
 
         s_ylabel = "{} (kN)".format(shear_key)
         m_ylabel = "{} (kN·m)".format(moment_key)
@@ -997,7 +986,7 @@ class VisualizerWindow(QMainWindow):
         self.panel_bmd.update("BMD\n{}".format(s_tag), x_mm,  moment, m_ylabel)
         self.panel_nfd.update("NFD\n(Axial)",           x_mm,  axial,  "P (kN)")
         self.panel_defl.update("Deflection\n{}".format(s_tag), xd, d, d_ylabel,
-                               smooth=not is_column, extra_info=dir_note)
+                               extra_info=dir_note)
 
         # Update window subtitle
         lbl = me.get("label_name", me.get("frame_label", str(eid)))
