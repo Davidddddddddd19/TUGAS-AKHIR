@@ -33,10 +33,16 @@ __doc__ = "Open force diagram window for selected Revit structural elements"
 SCRIPT_DIR         = os.path.dirname(os.path.abspath(__file__))
 PANEL_DIR          = os.path.normpath(os.path.join(SCRIPT_DIR, ".."))
 CREATE_DIR         = os.path.join(PANEL_DIR, "Create.pushbutton")
-DESIGN_DIR         = os.path.join(PANEL_DIR, "Design.pushbutton", "Run Design Check")
+DESIGN_DIR         = os.path.join(PANEL_DIR, "Design.pushbutton", "Steel Design Engine")
 
 RESULT_PATH        = os.path.join(CREATE_DIR, "Result.json")
 DESIGN_RESULT_PATH = os.path.join(DESIGN_DIR, "Design Result.json")
+
+# Auto-Select _New files (dipakai jika tersedia)
+AUTOSELECT_DIR         = os.path.join(PANEL_DIR, "Auto Select.pushbutton")
+RESULT_NEW_PATH        = os.path.join(AUTOSELECT_DIR, "Result_New.json")
+DESIGN_RESULT_NEW_PATH = os.path.join(AUTOSELECT_DIR, "Design_Result_New.json")
+
 ENGINE_PATH        = os.path.join(SCRIPT_DIR, "Visualizer Engine", "Visualizer Engine.py")
 SENTINEL_PATH      = os.path.join(SCRIPT_DIR, "_roida_next_elem.flag")
 RESPONSE_PATH      = os.path.join(SCRIPT_DIR, "_roida_elem_response.json")
@@ -100,13 +106,109 @@ def _kill_existing():
         pass
 
 
+#UNTUK_SAMBUNGAN_BAJA — Pattern deteksi data source (Create vs Auto Select) — Connection Engine harus replika logika ini
+def _get_active_paths():
+    """Return (result_path, design_result_path).
+
+    Pilih berdasarkan timestamp terbaru:
+    - Jika Auto Select Result_New.json LEBIH BARU dari Create Result.json → pakai Auto Select
+    - Sebaliknya → pakai Create (default)
+    Ini mencegah file Auto Select basi menimpa hasil Create yang baru.
+    """
+    create_exists = os.path.exists(RESULT_PATH)
+    auto_exists = (os.path.exists(RESULT_NEW_PATH)
+                   and os.path.exists(DESIGN_RESULT_NEW_PATH))
+
+    if auto_exists and create_exists:
+        # Pakai yang lebih baru
+        if os.path.getmtime(RESULT_NEW_PATH) > os.path.getmtime(RESULT_PATH):
+            return RESULT_NEW_PATH, DESIGN_RESULT_NEW_PATH
+        return RESULT_PATH, DESIGN_RESULT_PATH
+    elif auto_exists:
+        return RESULT_NEW_PATH, DESIGN_RESULT_NEW_PATH
+    return RESULT_PATH, DESIGN_RESULT_PATH
+
+
+def _revit_to_analytical(revit_ids):
+    """Map Revit element IDs → analytical element IDs via Result.json.
+
+    Kolom multi-story: satu Revit element_id = beberapa analytical element
+    (revit_id*1000 + story_index). Balok: 1:1 mapping langsung.
+    """
+    result_path, _ = _get_active_paths()
+    if not os.path.exists(result_path):
+        return revit_ids  # fallback: return as-is
+
+    try:
+        with open(result_path, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return revit_ids
+
+    model_elems = data.get("model_data", {}).get("model_elements", [])
+
+    # Kumpulkan semua analytical ID
+    all_analytical = set()
+    for e in model_elems:
+        try:
+            all_analytical.add(int(e["id"]))
+        except (KeyError, ValueError):
+            continue
+
+    # Identifikasi composite bases: kolom dengan >1 segmen sharing base
+    col_base_count = {}
+    for e in model_elems:
+        if e.get("type", "").lower() != "column":
+            continue
+        try:
+            cid = int(e["id"])
+        except (KeyError, ValueError):
+            continue
+        base = cid // 1000
+        col_base_count[base] = col_base_count.get(base, 0) + 1
+    composite_bases = {b for b, cnt in col_base_count.items() if cnt > 1}
+
+    # Bangun segment_map hanya untuk composite bases
+    segment_map = {}
+    for e in model_elems:
+        if e.get("type", "").lower() != "column":
+            continue
+        try:
+            cid = int(e["id"])
+        except (KeyError, ValueError):
+            continue
+        base = cid // 1000
+        if base in composite_bases:
+            segment_map.setdefault(base, []).append(cid)
+
+    resolved = []
+    for rid in revit_ids:
+        rid_int = int(rid)
+        if rid_int in all_analytical:
+            # Direct match (balok, atau single-story tanpa suffix)
+            resolved.append(str(rid_int))
+        elif rid_int in segment_map:
+            # Kolom multi-story: expand ke semua segmen
+            for seg_id in sorted(segment_map[rid_int]):
+                resolved.append(str(seg_id))
+
+    # Jika tidak ada ID yang cocok (misal: Auto Select punya ID berbeda),
+    # kirim semua analytical IDs agar Visualizer tetap bisa menampilkan data
+    if not resolved:
+        resolved = [str(aid) for aid in sorted(all_analytical)]
+
+    return resolved
+
+
 def _launch(elem_ids, design_arg):
     _kill_existing()
 
+    result_path, _ = _get_active_paths()
+
     cmd = [
         PYTHON_EXE, ENGINE_PATH,
-        "--result",   RESULT_PATH,
-        "--elements", json.dumps(elem_ids),
+        "--result",   result_path,
+        "--elements", ",".join(str(x) for x in elem_ids),
         "--sentinel", SENTINEL_PATH,
         "--response", RESPONSE_PATH,
     ]
@@ -186,6 +288,8 @@ def _idling_handler(_sender, _args):
             pass
 
     new_ids = _pick()
+    # Resolve Revit IDs → analytical IDs
+    new_ids = _revit_to_analytical(new_ids) if new_ids else new_ids
 
     try:
         with open(RESPONSE_PATH, "w") as f:
@@ -211,7 +315,15 @@ def main():
 
     _G["uiapp"]      = revit.HOST_APP.uiapp
     _G["uidoc"]      = revit.uidoc
-    _G["design_arg"] = DESIGN_RESULT_PATH if os.path.exists(DESIGN_RESULT_PATH) else ""
+
+    # Design result — hanya kirim jika ada DAN tidak lebih lama dari Result
+    # (mencegah DCR basi dari run sebelumnya tampil setelah Create baru)
+    active_result, active_design = _get_active_paths()
+    if (os.path.exists(active_design) and os.path.exists(active_result)
+            and os.path.getmtime(active_design) >= os.path.getmtime(active_result)):
+        _G["design_arg"] = active_design
+    else:
+        _G["design_arg"] = ""
 
     # Tulis session ID — handler lama akan mendeteksi ini dan unregister diri sendiri
     try:
@@ -231,6 +343,9 @@ def main():
     elem_ids = _pick()
     if not elem_ids:
         return
+
+    # Resolve Revit IDs → analytical IDs (kolom multi-story di-expand)
+    elem_ids = _revit_to_analytical(elem_ids)
 
     try:
         _launch(elem_ids, _G["design_arg"])
