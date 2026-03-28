@@ -7,3 +7,4 @@ SKEMA B : Pembebanan selfweight, Liveload + lantai, gempa static equivalent, dan
 SKEMA C : Mempertimbangkan beban lain selain Self, Live, EQ dan COMB
 
 TOTAL ADA 9 PROGRAM PY
+TERBARU : V4
