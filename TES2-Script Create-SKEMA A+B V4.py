@@ -18,8 +18,15 @@ except Exception:
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 
-from Autodesk.Revit.DB import *
-from Autodesk.Revit.DB.Structure import StructuralType, StructuralFramingUtils
+from Autodesk.Revit.DB import (
+    FilteredElementCollector, FamilySymbol, Material, Level, View3D,
+    ElementId, XYZ, Line, Transaction, ElementTransformUtils,
+    BuiltInCategory, BuiltInParameter, StorageType,
+    FamilyInstance, Family, LocationCurve, LocationPoint,
+    Category, Options, ElementMulticategoryFilter,
+    Grid, DatumExtentType
+)
+from Autodesk.Revit.DB.Structure import StructuralType, StructuralFramingUtils, AnalyticalCurveType
 from Autodesk.Revit.DB.Structure import TranslationRotationValue, AnalyticalModelSelector
 from Autodesk.Revit.UI import TaskDialog
 from pyrevit import script, HOST_APP, revit # Added revit import
@@ -57,10 +64,10 @@ ANALYSIS_JSON_PATH = os.path.join(os.path.dirname(OUTPUT_PATH), "Analysis", "Ana
 # ═══════════════════════════════════════════════════════════════
 
 N_STORY     = 2          # Jumlah lantai
-BAY_X_COUNT = 2          # Jumlah bay arah X
+BAY_X_COUNT = 2         # Jumlah bay arah X
 BAY_Y_COUNT = 2          # Jumlah bay arah Y
 SPAN_X_MM   = 4000       # Bentang X (mm)
-SPAN_Y_MM   = 4000       # Bentang Y (mm)
+SPAN_Y_MM   = 6000       # Bentang Y (mm)
 HEIGHT_MM   = 4000       # Tinggi per lantai (mm)
 
 COLUMN_ROTATION_DEG          = 0    # Rotasi kolom (derajat)
@@ -85,8 +92,16 @@ _GRID_Y_COORDS_MM = [int(round(-(BAY_Y_COUNT * SPAN_Y_MM / 2.0) + j * SPAN_Y_MM)
 _Z_LEVELS_MM = [k * int(HEIGHT_MM) for k in range(int(N_STORY) + 1)]
 
 # ═══════════════════════════════════════════════════════════════
-# 3. PENAMPANG (SECTION)
+# 3. PENAMPANG (SECTION) & MATERIAL — ASSIGNMENT PER GROUP
 # ═══════════════════════════════════════════════════════════════
+#
+#   User mengatur penampang dan material per group di sini.
+#   Group yang tersedia:
+#     - "Kolom"       : Semua kolom
+#     - "Balok Induk"  : Balok eksterior + interior (1 profil)
+#     - "Balok Anak"   : Balok sekunder / secondary beam
+#
+# ───────────────────────────────────────────────────────────────
 
 # Database IWF — format: {nama: {d, bf, tw, tf, r}} (mm)
 SECTIONS = {
@@ -95,41 +110,55 @@ SECTIONS = {
     "IWF307.9x305.3x9.9x15.4": {"d": 307.9, "bf": 305.3, "tw": 9.9, "tf": 15.4, "r": 15.2},
 }
 
-# Assignment per group
-SECTION_COL      = "IWF307.9x305.3x9.9x15.4"  # Kolom
-SECTION_BEAM_EXT = "IWF303.4x165x6x10.2"       # Balok Eksterior
-SECTION_BEAM_INT = "IWF303.4x165x6x10.2"       # Balok Interior
-
-# Balok anak
-SECONDARY_BEAM_CONFIG = {
-    "enabled":         True,       # True = aktif di seluruh pipeline
-    "count_per_bay_x": 1,          # Jumlah balok anak arah X per bay
-    "count_per_bay_y": 0,          # Jumlah balok anak arah Y per bay
-    "section":         "IWF200x100x5.5x8",
-    "material":        "BJ 41",
-    "floors":          "all",       # "all" atau list, misal [1, 2]
-}
-
-# ═══════════════════════════════════════════════════════════════
-# 4. MATERIAL
-# ═══════════════════════════════════════════════════════════════
-
+#UNTUK_SAMBUNGAN_BAJA — Fy, Fu material untuk kapasitas baut, pelat, dan las sambungan
 # Database material — {Fy, Fu, E (MPa), Nu, Rho (kg/m3), thermal}
 MATERIALS = {
     "BJ 37": {"Fy": 240, "Fu": 370, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
               "thermal_conductivity": 45.3, "specific_heat": 480},
-    "BJ 41": {"Fy": 275, "Fu": 430, "E": 205000, "Nu": 0.3, "Rho_kg_m3": 7156.4437,
-              "thermal_conductivity": 45.3, "specific_heat": 480},
-    "BJ 50": {"Fy": 290, "Fu": 500, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
-              "thermal_conductivity": 45.3, "specific_heat": 480},
-    "BJ 55": {"Fy": 410, "Fu": 550, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
+    "BJ 41": {"Fy": 250, "Fu": 410, "E": 200000, "Nu": 0.3, "Rho_kg_m3": 7850,
               "thermal_conductivity": 45.3, "specific_heat": 480},
 }
 
-# Assignment per group
-MATERIAL_COL      = "BJ 41"
-MATERIAL_BEAM_EXT = "BJ 41"
-MATERIAL_BEAM_INT = "BJ 41"
+# ── NAMA GROUP (ubah nama group di sini) ─────────────────────
+# Nama ini menjadi satu-satunya titik kontrol untuk seluruh
+# pipeline: Create → Analysis → Design → Auto Select.
+GRP_KOLOM       = "Kolom"
+GRP_BALOK_INDUK = "Balok Induk"
+GRP_BALOK_ANAK  = "Balok Anak"
+
+# ── ASSIGNMENT PER GROUP ──────────────────────────────────────
+# Ubah section dan material sesuai kebutuhan desain.
+# Section harus terdaftar di SECTIONS di atas.
+# Material harus terdaftar di MATERIALS di atas.
+
+GROUP_ASSIGNMENT = {
+    GRP_KOLOM: {
+        "section":  "IWF307.9x305.3x9.9x15.4",
+        "material": "BJ 41",
+    },
+    GRP_BALOK_INDUK: {
+        "section":  "IWF303.4x165x6x10.2",
+        "material": "BJ 41",
+    },
+    GRP_BALOK_ANAK: {
+        "enabled":         True,        # True = aktif di seluruh pipeline
+        "section":         "IWF200x100x5.5x8",
+        "material":        "BJ 41",
+        "count_per_bay_x": 1,           # Jumlah balok anak arah X per bay
+        "count_per_bay_y": 0,           # Jumlah balok anak arah Y per bay
+        "floors":          "all",        # "all" atau list, misal [1, 2]
+        "release":         False,         # True = sendi (M3 release) di kedua ujung
+    },
+}
+
+# ── Derived constants (jangan diubah) ─────────────────────────
+SECTION_COL      = GROUP_ASSIGNMENT[GRP_KOLOM]["section"]
+SECTION_BEAM_EXT = GROUP_ASSIGNMENT[GRP_BALOK_INDUK]["section"]
+SECTION_BEAM_INT = GROUP_ASSIGNMENT[GRP_BALOK_INDUK]["section"]
+MATERIAL_COL      = GROUP_ASSIGNMENT[GRP_KOLOM]["material"]
+MATERIAL_BEAM_EXT = GROUP_ASSIGNMENT[GRP_BALOK_INDUK]["material"]
+MATERIAL_BEAM_INT = GROUP_ASSIGNMENT[GRP_BALOK_INDUK]["material"]
+SECONDARY_BEAM_CONFIG = GROUP_ASSIGNMENT[GRP_BALOK_ANAK]
 
 # ═══════════════════════════════════════════════════════════════
 # 5. TUMPUAN (BOUNDARY CONDITIONS)
@@ -137,6 +166,15 @@ MATERIAL_BEAM_INT = "BJ 41"
 
 # Tipe tumpuan dasar kolom: "Fixed" | "Pinned" | "Roller"
 SUPPORT_TYPE = "Fixed"
+
+# ═══════════════════════════════════════════════════════════════
+# 6. METODE ANALISIS (AISC 360-22)
+# ═══════════════════════════════════════════════════════════════
+
+# Pilih metode analisis desain:
+#   "ELM" = Effective Length Method (K dari nomogram, EI nominal dalam analisis)
+#   "DAM" = Direct Analysis Method  (K = 1.0, 0.8*tau_b*EI dalam analisis)
+ANALYSIS_METHOD = "ELM"
 
 # (auto-resolved)
 _SUPPORT_DOF_MAP = {
@@ -153,7 +191,7 @@ SUPPORT_DOF = _SUPPORT_DOF_MAP.get(SUPPORT_TYPE, [1, 1, 1, 1, 1, 1])
 # --- Beban Pelat Lantai ---
 SLAB_THICKNESS     = 150.0    # Tebal slab beton (mm)
 SLAB_ADD_THICKNESS = 30.0     # Tebal spesi/finishing (mm)
-LIVE_LOAD_PRESSURE = 0.024    # Beban hidup (MPa) = 24 kN/m2
+LIVE_LOAD_PRESSURE = 0.0024    # Beban hidup (MPa) = 24 kN/m2
 
 # Konstanta perhitungan
 CONCRETE_UNIT_WEIGHT_kN_m3 = 24.0    # kN/m3
@@ -220,19 +258,69 @@ SITE_CLASS = "SC"            # Kelas situs: SA, SB, SC, SD, SE
 SS  = 1.0821                 # MCE_R (T=0.2s)
 S1  = 0.4896                 # MCE_R (T=1.0s)
 TL  = 20                     # Periode transisi panjang (detik)
-SDS = 0.87                   # Percepatan desain (short period)
-SD1 = 0.49                   # Percepatan desain (1-detik)
+# SDS dan SD1 dihitung otomatis dari Fa, Fv, SS, S1 (SNI 1726 Pers. 7-10)
 
-# Waktu getar alami
-Ct   = 0.0724                # Koefisien tipe struktur (baja MRF)
-x_Ta = 0.8                   # Eksponen (baja MRF)
+# Waktu getar alami — konstan untuk gedung baja MRF (SNI 1726 Tabel 17)
+Ct   = 0.0724
+x_Ta = 0.8
 
-# Desain seismik
-Ie            = 1.0          # Faktor keutamaan gempa
-RISK_CATEGORY = "II"         # Kategori risiko (I, II, III, IV)
+# --- Tipe Gedung → Kategori Risiko & Ie (SNI 1726-2019 Tabel 3 & 4) ---
+# Pilih salah satu tipe gedung di bawah:
+TIPE_GEDUNG = "Gedung Perkantoran"
+
+# Mapping tipe gedung → kategori risiko  (SNI 1726-2019 Tabel 3)
+_TIPE_GEDUNG_TO_RISK = {
+    # Kategori Risiko I
+    "Fasilitas Pertanian":        "I",
+    "Fasilitas Sementara":        "I",
+    "Gudang Penyimpanan":         "I",
+    "Rumah Jaga":                 "I",
+    # Kategori Risiko II
+    "Perumahan":                  "II",
+    "Rumah Toko":                 "II",
+    "Pasar":                      "II",
+    "Gedung Perkantoran":         "II",
+    "Gedung Apartemen":           "II",
+    "Pusat Perbelanjaan/Mall":    "II",
+    "Bangunan Industri":          "II",
+    "Fasilitas Manufaktur":       "II",
+    "Rumah Makan/Restoran":       "II",
+    # Kategori Risiko III
+    "Bioskop":                    "III",
+    "Gedung Pertemuan":           "III",
+    "Stadion":                    "III",
+    "Fasilitas Kesehatan":        "III",   # tanpa bedah/UGD
+    "Fasilitas Penitipan Anak":   "III",
+    "Penjara":                    "III",
+    "Bangunan Orang Jompo":       "III",
+    "Pusat Pembangkit Listrik":   "III",
+    "Fasilitas Penanganan Air":   "III",
+    "Fasilitas Penanganan Limbah":"III",
+    "Pusat Telekomunikasi":       "III",
+    # Kategori Risiko IV
+    "Bangunan Monumental":        "IV",
+    "Gedung Sekolah":             "IV",
+    "Rumah Ibadah":               "IV",
+    "Rumah Sakit":                "IV",    # dengan bedah/UGD
+    "Fasilitas Pemadam Kebakaran":"IV",
+    "Tempat Perlindungan Darurat":"IV",
+    "Fasilitas Kesiapan Darurat": "IV",
+    "Pusat Pembangkit Energi Darurat": "IV",
+}
+
+# Mapping kategori risiko → Ie  (SNI 1726-2019 Tabel 4)
+_RISK_TO_Ie = {"I": 1.0, "II": 1.0, "III": 1.25, "IV": 1.5}
+
+# Auto-resolve
+if TIPE_GEDUNG not in _TIPE_GEDUNG_TO_RISK:
+    raise ValueError(
+        "TIPE_GEDUNG '{}' tidak dikenali. Pilihan: {}".format(
+            TIPE_GEDUNG, list(_TIPE_GEDUNG_TO_RISK.keys())))
+RISK_CATEGORY = _TIPE_GEDUNG_TO_RISK[TIPE_GEDUNG]
+Ie = _RISK_TO_Ie[RISK_CATEGORY]
 
 # Tipe rangka: "SRPMB/OMF" atau "SRPMK/SMF"
-FRAME_TYPE = "SRPMB/OMF"
+FRAME_TYPE = "SRPMK/SMF"
 
 FRAME_CONFIG = {
     "SRPMB/OMF": {
@@ -362,10 +450,14 @@ def get_Fv(site_class, S1_val):
             return round(vals[i] + ratio * (vals[i+1] - vals[i]), 4)
     return vals[-1]
 
-# --- Hitung variabel turunan ---
-Fa = get_Fa(SITE_CLASS, SS)
-Fv = get_Fv(SITE_CLASS, S1)
-T0 = 0.2 * (SD1 / SDS)
+# --- Hitung variabel turunan (SNI 1726 Pers. 7-10) ---
+Fa  = get_Fa(SITE_CLASS, SS)
+Fv  = get_Fv(SITE_CLASS, S1)
+SMS = Fa * SS                   # Pers. 7
+SM1 = Fv * S1                   # Pers. 8
+SDS = round((2.0 / 3.0) * SMS, 2)  # Pers. 9
+SD1 = round((2.0 / 3.0) * SM1, 2)  # Pers. 10
+T0  = 0.2 * (SD1 / SDS)
 Ts_period = SD1 / SDS
 TOTAL_HEIGHT_M = N_STORY * HEIGHT_MM / 1000.0
 Ta = Ct * (TOTAL_HEIGHT_M ** x_Ta)
@@ -842,7 +934,8 @@ def set_project_units_mm(doc):
         print("  ⚠️ Set units error: {}".format(str(e)))
 
 # ===================================================
-# DETERMINE GROUP (Column / Beam Exterior / Beam Interior)
+# DETERMINE GROUP
+#UNTUK_SAMBUNGAN_BAJA — Klasifikasi Kolom/Balok Induk/Balok Anak menentukan tipe sambungan (moment EP/clip angle/splice)
 # ===================================================
 def determine_group(element):
     """Deteksi group berdasarkan element ID yang di-track saat creation."""
@@ -852,19 +945,13 @@ def determine_group(element):
             return _ELEMENT_GROUPS[el_id]
     except:
         pass
-    
-    # Fallback: deteksi dari category + Symbol.Name
+
+    # Fallback: deteksi dari category
     try:
         cat_id = element.Category.Id.IntegerValue
         if cat_id == int(BuiltInCategory.OST_StructuralColumns):
-            return "Column"
-        else:
-            sym_name = element.Symbol.Name
-            if sym_name == SECTION_BEAM_EXT:
-                return "Beam Exterior"
-            elif sym_name == SECTION_BEAM_INT:
-                return "Beam Interior"
-            return "Beam"
+            return GRP_KOLOM
+        return GRP_BALOK_INDUK
     except:
         return "Unknown"
 
@@ -1036,6 +1123,7 @@ def val2invC(val):
 
 # ===================================================
 # LOGIKA UTAMA (Sesuai Referensi + Parameter Ekstra)
+#UNTUK_SAMBUNGAN_BAJA — Ekstraksi Fy, Fu, E dari elemen Revit untuk desain kapasitas sambungan (AISC J)
 # ===================================================
 def get_material_data(element, doc):
     mat_data = {} # No default values, strictly lookup
@@ -1098,17 +1186,12 @@ def get_material_data(element, doc):
     except Exception as e:
         print(f"Material Error: {str(e)}")
     
-    # === OVERRIDE: Gunakan nama material dari assignment berdasarkan group ===
+    # === OVERRIDE: Gunakan nama material dari GROUP_ASSIGNMENT ===
     # Ini mengatasi kasus dimana Revit material param tidak berubah ke BJ 41
     elem_id = element.Id.IntegerValue
     if elem_id in _ELEMENT_GROUPS:
         grp = _ELEMENT_GROUPS[elem_id]
-        if grp == "Column":
-            assigned_mat = MATERIAL_COL
-        elif grp == "Beam Exterior":
-            assigned_mat = MATERIAL_BEAM_EXT
-        else:
-            assigned_mat = MATERIAL_BEAM_INT
+        assigned_mat = GROUP_ASSIGNMENT.get(grp, {}).get("material", MATERIAL_COL)
         
         # Override name ke material yang benar
         mat_data["Name"] = assigned_mat
@@ -1138,6 +1221,7 @@ def get_material_data(element, doc):
     
     return mat_data
 
+#UNTUK_SAMBUNGAN_BAJA — Dimensi section (d, bf, tw, tf, r) untuk sizing pelat, baut, stiffener, dan filler plate
 def get_section_properties(element, doc):
     """
     Extract section geometric parameters and calculate section properties manually.
@@ -1171,12 +1255,8 @@ def get_section_properties(element, doc):
             try:
                 el_id = element.Id.IntegerValue
                 group = _ELEMENT_GROUPS.get(el_id, "")
-                if group == "Column":
-                    custom_section_name = SECTION_COL
-                elif group == "Beam Exterior":
-                    custom_section_name = SECTION_BEAM_EXT
-                elif group == "Beam Interior":
-                    custom_section_name = SECTION_BEAM_INT
+                if group in GROUP_ASSIGNMENT:
+                    custom_section_name = GROUP_ASSIGNMENT[group].get("section", "")
             except:
                 pass
         
@@ -1454,6 +1534,7 @@ def get_section_properties(element, doc):
     except: pass
     return props
 
+#UNTUK_SAMBUNGAN_BAJA — Koordinat node (start/end) untuk deteksi lokasi joint dan node_map
 def get_topology_ref(element, doc):
     # Default values sebagai Integer
     topo = {"start_node": [0, 0, 0], "end_node": [0, 0, 0], "length_mm": 0}
@@ -1520,6 +1601,7 @@ def get_topology_ref(element, doc):
 
 # ===================================================
 # LOCAL AXIS
+#UNTUK_SAMBUNGAN_BAJA — Orientasi lokal elemen (web/flange direction) untuk klasifikasi tipe sambungan
 # ===================================================
 
 def get_local_axes(element, doc):
@@ -1872,6 +1954,7 @@ def create_revit_grids(doc, x_coords_mm, y_coords_mm, grid_x_labels, grid_y_labe
     print("  ✅ Grid elements: {} dibuat".format(created))
 
 
+#UNTUK_SAMBUNGAN_BAJA — Integrasi semua data elemen (section + material + topology + axes) → dikonsumsi Connection Engine
 def get_element_data(element, doc):
     # 1. Format Nama Family & Type
     # Target: "FamilyName : TypeName" (Contoh: "UC-Universal Columns : UC305x305x97")
@@ -1935,6 +2018,7 @@ def get_element_data(element, doc):
 # MAIN EXECUTION (TRANSACTION)
 # ===================================================
 cols_to_process, created_ids = [], []
+#UNTUK_SAMBUNGAN_BAJA — Tracking dict: fabrikasi kolom (splice), parent balok anak (clip angle), index balok induk
 _FAB_COL_MAP     = {}   # Mapping: revit_element_id -> (fab_base_idx, fab_top_idx)
 _SEC_BEAM_PARENTS = {}  # Mapping: secondary_elem_id (int) -> [parent1_id (int), parent2_id (int)]
 _BEAMX_BY_INDEX  = {}   # (j_grid, i_bay, floor_k) -> element_id int  (X-dir primary beams)
@@ -2211,6 +2295,7 @@ try:
             fab_segments = [(0, N_STORY)]
             print("  Fabrication: Single piece (total {:.0f}mm <= {:.0f}mm)".format(total_height_mm, effective_max))
         else:
+            #UNTUK_SAMBUNGAN_BAJA — Penentuan titik splice kolom (multi-segment fabrication)
             # Multi-segment: potong di level + offset (Opsi A)
             seg_start = 0
             for k in range(1, N_STORY + 1):
@@ -2310,9 +2395,9 @@ try:
                         'top_offset_ft': top_offset_ft
                     })
                     created_ids.append(c.Id)
-                    _ELEMENT_GROUPS[c.Id.IntegerValue] = "Column"
+                    _ELEMENT_GROUPS[c.Id.IntegerValue] = GRP_KOLOM  #UNTUK_SAMBUNGAN_BAJA — group tracking kolom
                     # Simpan metadata fabrikasi untuk split saat JSON export
-                    _FAB_COL_MAP[c.Id.IntegerValue] = (seg_base_idx, seg_top_idx)
+                    _FAB_COL_MAP[c.Id.IntegerValue] = (seg_base_idx, seg_top_idx)  #UNTUK_SAMBUNGAN_BAJA — fab mapping untuk splice
         
         # (Grid sudah dibuat sebelum kolom di atas)
 
@@ -2346,7 +2431,7 @@ try:
                     pass
                 
                 # Track group assignment
-                _ELEMENT_GROUPS[b.Id.IntegerValue] = group_name
+                _ELEMENT_GROUPS[b.Id.IntegerValue] = group_name  #UNTUK_SAMBUNGAN_BAJA — group tracking balok
                 
                 return b.Id
                 
@@ -2355,7 +2440,7 @@ try:
                 is_ext = (j == 0 or j == BAY_Y_COUNT)
                 sym = beam_ext_sym if is_ext else beam_int_sym
                 mat = mat_beam_ext if is_ext else mat_beam_int
-                grp = "Beam Exterior" if is_ext else "Beam Interior"
+                grp = GRP_BALOK_INDUK
                 for i in range(BAY_X_COUNT):
                     p_start = get_pt(i, j, z_top)
                     p_end   = get_pt(i+1, j, z_top)
@@ -2368,7 +2453,7 @@ try:
                 is_ext = (i == 0 or i == BAY_X_COUNT)
                 sym = beam_ext_sym if is_ext else beam_int_sym
                 mat = mat_beam_ext if is_ext else mat_beam_int
-                grp = "Beam Exterior" if is_ext else "Beam Interior"
+                grp = GRP_BALOK_INDUK
                 for j in range(BAY_Y_COUNT):
                     p_start = get_pt(i, j, z_top)
                     p_end   = get_pt(i, j+1, z_top)
@@ -2377,6 +2462,7 @@ try:
                     _BEAMY_BY_INDEX[(i, j, k)] = by_id.IntegerValue
 
             # --- Balok Anak (Secondary Beams) ---
+            #UNTUK_SAMBUNGAN_BAJA — Pembuatan balok anak + tracking parent beams untuk deteksi joint clip angle
             if SECONDARY_BEAM_CONFIG.get("enabled", False) and beam_sec_sym is not None:
                 _sb_floors = SECONDARY_BEAM_CONFIG.get("floors", "all")
                 _floor_ok  = (_sb_floors == "all") or ((k + 1) in _sb_floors)
@@ -2393,7 +2479,7 @@ try:
                                             + _y_ratio * span_y_ft)
                                 _ps = XYZ(start_x + _i * span_x_ft,       _y_ft, z_top)
                                 _pe = XYZ(start_x + (_i + 1) * span_x_ft, _y_ft, z_top)
-                                _sb_id = mk_bm(_ps, _pe, beam_sec_sym, mat_beam_sec, "Secondary")
+                                _sb_id = mk_bm(_ps, _pe, beam_sec_sym, mat_beam_sec, GRP_BALOK_ANAK)
                                 created_ids.append(_sb_id)
                                 # Parents: Y-dir beams at grid X=_i and X=_i+1 for bay _j
                                 _p1 = _BEAMY_BY_INDEX.get((_i,     _j, k), 0)
@@ -2408,7 +2494,7 @@ try:
                                             + _x_ratio * span_x_ft)
                                 _ps = XYZ(_x_ft, start_y + _j * span_y_ft,       z_top)
                                 _pe = XYZ(_x_ft, start_y + (_j + 1) * span_y_ft, z_top)
-                                _sb_id = mk_bm(_ps, _pe, beam_sec_sym, mat_beam_sec, "Secondary")
+                                _sb_id = mk_bm(_ps, _pe, beam_sec_sym, mat_beam_sec, GRP_BALOK_ANAK)
                                 created_ids.append(_sb_id)
                                 # Parents: X-dir beams at grid Y=_j and Y=_j+1 for bay _i
                                 _p1 = _BEAMX_BY_INDEX.get((_j,     _i, k), 0)
@@ -2489,6 +2575,54 @@ try:
     revit.uidoc.RefreshActiveView()
 except Exception:
     pass
+
+# Aktifkan grid di active 3D view
+try:
+    _active_view = revit.uidoc.ActiveView
+    if isinstance(_active_view, View3D):
+        _all_lvls = FilteredElementCollector(doc).OfClass(Level).ToElements()
+        with revit.Transaction("ROIDA: Show Grids in Active 3D View"):
+            # A. Pastikan kategori Grid tidak hidden
+            _grid_cat_id = ElementId(int(BuiltInCategory.OST_Grids))
+            try:
+                if _active_view.CanCategoryBeHidden(_grid_cat_id):
+                    if _active_view.GetCategoryHidden(_grid_cat_id):
+                        _active_view.SetCategoryHidden(_grid_cat_id, False)
+                        print("  Grid category: unhidden")
+            except Exception as e_cat:
+                print("  ⚠️ Grid category visibility: {}".format(str(e_cat)))
+
+            # B. ShowGridsOnLevel (Revit 2024 API) — hanya Level 1
+            _grid_ok = False
+            _lvl1 = None
+            for _lvl in _all_lvls:
+                if _lvl.Name == "Level 1":
+                    _lvl1 = _lvl
+                    break
+            # Fallback: ambil level dengan elevasi terendah
+            if _lvl1 is None:
+                _lvl1 = min(_all_lvls, key=lambda l: l.Elevation)
+
+            try:
+                _active_view.ShowGridsOnLevel(_lvl1.Id)
+                print("  ✅ ShowGridsOnLevel: {}".format(_lvl1.Name))
+                _grid_ok = True
+            except Exception as e_sg:
+                print("  ⚠️ ShowGridsOnLevel: {}".format(str(e_sg)))
+
+            # Verifikasi
+            if _grid_ok:
+                try:
+                    _showing = _active_view.GetLevelsThatShowGrids()
+                    print("  Verifikasi: {} level(s) showing grids".format(_showing.Count))
+                except Exception:
+                    pass
+
+        print("✅ Grid visibility applied to: {}".format(_active_view.Name))
+    else:
+        print("ℹ️ Active view bukan 3D view — ShowGrids dilewati")
+except Exception as e_show_grid:
+    print("⚠️ ShowGrids active view: {}".format(str(e_show_grid)))
 
 # ============================================================================
 # GENERATE ANALYTICAL MODEL (LOGIKA PRINT TOTAL GABUNGAN)
@@ -2597,7 +2731,11 @@ try:
         else:
             from Autodesk.Revit.DB.Structure import AnalyticalMember, AnalyticalToPhysicalAssociationManager, AnalyticalStructuralRole
             assoc_manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
-            
+
+            # Track unassociated column AMs for rotation (multi-story split
+            # creates N AMs but only the first gets association)
+            _unassoc_column_am_ids = set()
+
             # Ambil level elevations untuk split kolom per-story
             all_levels_sorted = sorted(
                 FilteredElementCollector(doc).OfClass(Level).ToElements(),
@@ -2642,17 +2780,20 @@ try:
                                 for k in range(seg_base_idx, seg_top_idx):
                                     z_base = all_levels_sorted[k].Elevation if k < len(all_levels_sorted) else 0
                                     z_top = all_levels_sorted[k+1].Elevation if k+1 < len(all_levels_sorted) else z_base + 1
-                                    
+
                                     story_curve = Line.CreateBound(
                                         XYZ(pt.X, pt.Y, z_base),
                                         XYZ(pt.X, pt.Y, z_top))
-                                    
+
                                     am = AnalyticalMember.Create(doc, story_curve)
                                     am.StructuralRole = AnalyticalStructuralRole.StructuralRoleColumn
                                     # Hanya associate analytical member pertama (Revit: 1 association per physical)
                                     if first_am:
                                         assoc_manager.AddAssociation(am.Id, phys_el.Id)
                                         first_am = False
+                                    else:
+                                        # Track unassociated AMs so rotation loop can find them
+                                        _unassoc_column_am_ids.add(am.Id)
                                 
                                 count_processed_successfully += 1
                                 print("    Column {} -> {} analytical members (per-story)".format(
@@ -2699,17 +2840,24 @@ try:
                     try:
                         # Get associated physical element to determine type
                         phys_id = assoc_manager.GetAssociatedElementId(am.Id)
-                        if phys_id == ElementId.InvalidElementId:
+
+                        # Check if this is an unassociated multi-story column AM
+                        is_unassoc_col = am.Id in _unassoc_column_am_ids
+
+                        if phys_id == ElementId.InvalidElementId and not is_unassoc_col:
                             continue
-                        
-                        phys_el = doc.GetElement(phys_id)
-                        if phys_el is None:
-                            continue
-                        
-                        # Determine if Column or Beam
-                        cat_id = phys_el.Category.Id.IntegerValue
-                        is_column = (cat_id == int(BuiltInCategory.OST_StructuralColumns))
-                        is_beam = (cat_id == int(BuiltInCategory.OST_StructuralFraming))
+
+                        if is_unassoc_col:
+                            is_column = True
+                            is_beam = False
+                        else:
+                            phys_el = doc.GetElement(phys_id)
+                            if phys_el is None:
+                                continue
+                            # Determine if Column or Beam
+                            cat_id = phys_el.Category.Id.IntegerValue
+                            is_column = (cat_id == int(BuiltInCategory.OST_StructuralColumns))
+                            is_beam = (cat_id == int(BuiltInCategory.OST_StructuralFraming))
                         
                         rotation_applied = False
                         
@@ -2867,6 +3015,35 @@ try:
 
         print("✅ Visibility fix diterapkan ke {} 3D view.".format(applied))
 
+        # F. Aktifkan Grid visibility di semua 3D view
+        # F. Aktifkan Grid visibility — hanya Level 1
+        try:
+            all_levels = FilteredElementCollector(doc).OfClass(Level).ToElements()
+            _grid_cat_id = ElementId(int(BuiltInCategory.OST_Grids))
+            # Cari Level 1 (fallback: level elevasi terendah)
+            _lvl1 = None
+            for lvl in all_levels:
+                if lvl.Name == "Level 1":
+                    _lvl1 = lvl
+                    break
+            if _lvl1 is None:
+                _lvl1 = min(all_levels, key=lambda l: l.Elevation)
+
+            grid_shown = 0
+            for v3d in all_3d_views:
+                try:
+                    if v3d.CanCategoryBeHidden(_grid_cat_id):
+                        if v3d.GetCategoryHidden(_grid_cat_id):
+                            v3d.SetCategoryHidden(_grid_cat_id, False)
+                    v3d.ShowGridsOnLevel(_lvl1.Id)
+                    grid_shown += 1
+                except Exception:
+                    pass
+            if grid_shown > 0:
+                print("✅ Grid visibility (Level 1): diaktifkan di {} 3D view(s)".format(grid_shown))
+        except Exception as e_grid_vis:
+            print("⚠️ ShowGrids error: {}".format(str(e_grid_vis)))
+
 except Exception as e:
     print("❌ Gagal mengatur visibility: " + str(e))
 
@@ -2947,10 +3124,11 @@ try:
                 el_id = el.Id.IntegerValue
                 fab_info = _FAB_COL_MAP.get(el_id)
                 
+                #UNTUK_SAMBUNGAN_BAJA — Split kolom multi-story → virtual ID per lantai (id*1000+story) untuk deteksi splice
                 if fab_info and el_data["type"] == "Column":
                     seg_base_idx, seg_top_idx = fab_info
                     n_stories_in_seg = seg_top_idx - seg_base_idx
-                    
+
                     if n_stories_in_seg > 1:
                         # SPLIT: kolom menerus -> per-story virtual elements
                         topo = el_data["topology"]
@@ -3013,18 +3191,20 @@ try:
         except Exception as e_item:
             print("Skip Element ID {}: {}".format(el.Id, str(e_item)))
 
+    #UNTUK_SAMBUNGAN_BAJA — Attach parent_beams ke balok anak (relasi untuk deteksi joint clip angle)
     # --- C2. ATTACH parent_beams TO SECONDARY BEAM ELEMENTS ---
     # Build id->label_name lookup from final list
     if _SEC_BEAM_PARENTS:
         _id_to_lbl = {e["id"]: e.get("label_name", "?") for e in final_elements_list}
         for elem in final_elements_list:
-            if elem.get("group") == "Secondary":
+            if elem.get("group") == GRP_BALOK_ANAK:
                 parent_ids = _SEC_BEAM_PARENTS.get(elem["id"], [])
                 elem["parent_beams"] = [
                     {"id": pid, "label_name": _id_to_lbl.get(pid, "?")}
                     for pid in parent_ids if pid
                 ]
 
+    #UNTUK_SAMBUNGAN_BAJA — Struktur Result.json final: semua data elemen yang dikonsumsi Connection Engine
     # --- D. SAVE JSON (STRUKTUR FINAL) ---
     final_output = {
         # Grid System (label referensi elemen)
@@ -3051,6 +3231,16 @@ try:
             "type": SUPPORT_TYPE,
             "dof": SUPPORT_DOF
         },
+
+        # Group names (single source of truth untuk downstream)
+        "group_names": {
+            "kolom":       GRP_KOLOM,
+            "balok_induk": GRP_BALOK_INDUK,
+            "balok_anak":  GRP_BALOK_ANAK,
+        },
+
+        # Secondary beam release (M3 pin at both ends)
+        "secondary_beam_release": SECONDARY_BEAM_CONFIG.get("release", False),
         
         # Legacy fields (backward compatibility)
         "slab_sw_pressure": SLAB_SW_PRESSURE,
@@ -3071,8 +3261,9 @@ try:
         "seismic_parameters": {
             "site_class": SITE_CLASS,
             "SS": SS, "S1": S1, "TL": TL,
-            "SDS": SDS, "SD1": SD1,
             "Fa": Fa, "Fv": Fv,
+            "SMS": round(SMS, 4), "SM1": round(SM1, 4),
+            "SDS": SDS, "SD1": SD1,
             "T0": round(T0, 4), "Ts": round(Ts_period, 4),
             "Ct": Ct, "x_Ta": x_Ta, "Ta": round(Ta, 4),
             "TOTAL_HEIGHT_M": TOTAL_HEIGHT_M,
@@ -3084,6 +3275,7 @@ try:
             "sdc_message": SDC_MESSAGE,
             "N_STORY": N_STORY, "HEIGHT_MM": HEIGHT_MM,
             "COL_SPLICE_OFFSET_MM": COL_SPLICE_OFFSET_MM,
+            "analysis_method": ANALYSIS_METHOD,
         },
         
         "unit_system": "Revit Converted (mm, N, MPa)",
@@ -3216,7 +3408,27 @@ try:
         bc_count = 0
         bc_skip = 0
         bc_errors = []
-        
+
+        # First pass: find minimum Z among all column bases (ground level)
+        all_base_z = []
+        for col in columns:
+            try:
+                anal_id = assoc_manager.GetAssociatedElementId(col.Id)
+                if anal_id == ElementId.InvalidElementId:
+                    continue
+                anal_member = doc.GetElement(anal_id)
+                if anal_member is None:
+                    continue
+                curve = anal_member.GetCurve()
+                if curve is None:
+                    continue
+                pt0 = curve.GetEndPoint(0)
+                pt1 = curve.GetEndPoint(1)
+                all_base_z.append(min(pt0.Z, pt1.Z))
+            except:
+                pass
+        min_base_z = min(all_base_z) if all_base_z else 0.0
+
         with revit.Transaction("Apply Boundary Conditions"):
             for col in columns:
                 try:
@@ -3224,20 +3436,25 @@ try:
                     if anal_id == ElementId.InvalidElementId:
                         bc_skip += 1
                         continue
-                    
+
                     anal_member = doc.GetElement(anal_id)
                     if anal_member is None:
                         bc_skip += 1
                         continue
-                    
+
                     curve = anal_member.GetCurve()
                     if curve is None:
                         bc_skip += 1
                         continue
-                    
+
                     pt0 = curve.GetEndPoint(0)
                     pt1 = curve.GetEndPoint(1)
                     base_point = pt0 if pt0.Z <= pt1.Z else pt1
+
+                    # Only apply BC at ground level, not upper story columns
+                    if abs(base_point.Z - min_base_z) > 0.5:  # ~150mm tolerance in feet
+                        bc_skip += 1
+                        continue
                     
                     bc_created = False
                     
@@ -3310,9 +3527,10 @@ if json_success:
             out.print_md("### 🚀 Menjalankan OpenSees...")
             out.print_md("_Target Output: {}_".format(RESULT_PATH))
 
-            # 3. SIAPKAN ARGUMEN (4 Item)
-            # [Python Engine, Script Analysis, File Input (Model), File Output (Hasil)]
-            args = [PYTHON_EXE_PATH, ANALYSIS_SCRIPT_PATH, OUTPUT_PATH, RESULT_PATH]
+            # 3. SIAPKAN ARGUMEN
+            # [Python Engine, Script Analysis, File Input (Model), File Output (Hasil), --method]
+            args = [PYTHON_EXE_PATH, ANALYSIS_SCRIPT_PATH, OUTPUT_PATH, RESULT_PATH,
+                    "--method={}".format(ANALYSIS_METHOD)]
             
             # 4. JALANKAN PROSES (WAIT MODE)
             # Startupinfo menyembunyikan layar hitam CMD
@@ -3335,6 +3553,7 @@ if json_success:
 
             # ============================================================================
             # FUNGSI MERGE: Model data.json + Analysis.json → Result.json
+            #UNTUK_SAMBUNGAN_BAJA — Merge enriches node_id, frame_label, node classification → dipakai untuk node_map sambungan
             # ============================================================================
             def merge_to_result_json(model_path, analysis_path, merged_path, height_mm):
                 """
@@ -3670,6 +3889,15 @@ if json_success:
                         out.print_md("# 📑 LAPORAN HASIL ANALISIS STRUKTUR")
 
                         # ================================================================
+                        # INFO KONFIGURASI BALOK ANAK
+                        # ================================================================
+                        if SECONDARY_BEAM_CONFIG.get("enabled", False):
+                            _sb_release = SECONDARY_BEAM_CONFIG.get("release", False)
+                            _sb_status = "RELEASE (Sendi - M3 pin di kedua ujung)" if _sb_release else "FIXED (Jepit - momen ditransfer ke balok induk)"
+                            out.print_md("**Balok Anak:** {} | Tumpuan: **{}**".format(
+                                SECONDARY_BEAM_CONFIG.get("section", "-"), _sb_status))
+
+                        # ================================================================
                         # TAMPILKAN FREKUENSI NATURAL STRUKTUR (_modal)
                         # ================================================================
                         _modal = all_results.get('_modal', {})
@@ -3691,12 +3919,39 @@ if json_success:
                                     columns=["Mode", "T (s)", "f (Hz)", "Keterangan"],
                                     title="Periode & Frekuensi Natural (Ta empiris = {:.3f} s)".format(_ta)
                                 )
+
+                                # --- Modal Participating Mass Ratio ---
+                                _mpmr_rows = []
+                                for _m in _modes[:6]:
+                                    _mno = _m.get('mode', '-')
+                                    _T   = round(_m.get('period_s', 0), 4)
+                                    _ux  = _m.get('UX_ratio', 0) * 100
+                                    _uy  = _m.get('UY_ratio', 0) * 100
+                                    _rz  = _m.get('RZ_ratio', 0) * 100
+                                    _sux = _m.get('cum_UX', 0) * 100
+                                    _suy = _m.get('cum_UY', 0) * 100
+                                    _srz = _m.get('cum_RZ', 0) * 100
+                                    _dom = _m.get('dominant', '-')
+                                    _mpmr_rows.append([
+                                        _mno, _T,
+                                        "{:.2f}".format(_ux), "{:.2f}".format(_uy), "{:.2f}".format(_rz),
+                                        "{:.2f}".format(_sux), "{:.2f}".format(_suy), "{:.2f}".format(_srz),
+                                        _dom
+                                    ])
+                                print_center_table(
+                                    output=out,
+                                    data=_mpmr_rows,
+                                    columns=["Mode", "T (s)", "UX (%)", "UY (%)", "RZ (%)",
+                                             "Sum UX (%)", "Sum UY (%)", "Sum RZ (%)", "Dominant"],
+                                    title="Modal Participating Mass Ratios"
+                                )
                         # ================================================================
 
                         # Build dynamic load case list from Analysis.json keys
-                        gravity_keys = [k for k in all_results.keys() 
-                                       if not k.startswith('_') 
+                        gravity_keys = [k for k in all_results.keys()
+                                       if not k.startswith('_')
                                        and k not in ('SeismicX', 'SeismicY')
+                                       and not k.startswith('LIVE_ZONE_')
                                        and isinstance(all_results[k], dict)]
                         
                         out.print_md("Berikut adalah hasil untuk {} skenario pembebanan:".format(len(gravity_keys)))
@@ -4117,6 +4372,37 @@ if json_success:
                                 # Summary
                                 out.print_md("**T1 = {:.6f} s** | **f1 = {:.4f} Hz**".format(
                                     summary.get('T1', 0), summary.get('f1', 0)))
+
+                                # --- Modal Participating Mass Ratios (SAP2000-style) ---
+                                mpmr_rows = []
+                                for m in modes:
+                                    mpmr_rows.append([
+                                        "MODAL",
+                                        "Mode",
+                                        str(m['mode']),
+                                        "{:.6f}".format(m.get('period_s', 0)),
+                                        "{:.4f}".format(m.get('UX_ratio', 0)),
+                                        "{:.4f}".format(m.get('UY_ratio', 0)),
+                                        "{:.4f}".format(m.get('cum_UX', 0)),
+                                        "{:.4f}".format(m.get('cum_UY', 0)),
+                                        "{:.4f}".format(m.get('RZ_ratio', 0)),
+                                        "{:.4f}".format(m.get('cum_RZ', 0)),
+                                    ])
+                                print_center_table(
+                                    output=out,
+                                    data=mpmr_rows,
+                                    columns=[
+                                        "OutputCase", "StepType", "StepNum",
+                                        "Period (Sec)",
+                                        "UX", "UY", "SumUX", "SumUY", "RZ", "SumRZ",
+                                    ],
+                                    title="Modal Participating Mass Ratios"
+                                )
+                                out.print_md(
+                                    "**Cumulative: SumUX = {:.2f}%** | **SumUY = {:.2f}%** | **SumRZ = {:.2f}%**".format(
+                                        summary.get('cum_UX_pct', 0),
+                                        summary.get('cum_UY_pct', 0),
+                                        summary.get('cum_RZ_pct', 0)))
 
                         # ===========================================================
                         # SEISMIC ANALYSIS RESULTS (EQx & EQy)
