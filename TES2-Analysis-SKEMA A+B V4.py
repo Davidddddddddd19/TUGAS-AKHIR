@@ -25,8 +25,8 @@ G_ACC = 9.81              # Gravitasi (m/s^2) - Standard SI value
 # - End Length Offset: 1.0 for columns, 0.3 for beams (Rigid Zone Factor)
 # - Self-Weight: Auto-Calculate
 # Expected deviation: F1/F2/F3/M1 ~0-2%, M2 ~10-11% (element formulation difference)
-COL_RIGID_END_ZONE_FACTOR = 0.0   # Reverted to 0 for precision
-BEAM_RIGID_END_ZONE_FACTOR = 0.0  # Reverted to 0 for precision
+COL_RIGID_END_ZONE_FACTOR = 0.0   # REZ=0.3 tested: worsened match with SAP2000
+BEAM_RIGID_END_ZONE_FACTOR = 0.0  # Root cause is element formulation difference, not REZ
 
 # Beam Insertion Point: "top center" (SAP2000 CardinalPt=8)
 # Offsets beam centroid DOWN by d_mm/2, connected to joint via rigidLink.
@@ -44,6 +44,25 @@ TOLERANCE_COORD = 1.0     # Toleransi (mm)
 
 # DEFAULT_PRESSURE dihapus karena akan diambil dari JSON
 
+# ============================================================================
+# 1b. DAM STIFFNESS REDUCTION (AISC 360-22 Section C2.3)
+# ============================================================================
+# C2.3(a): Factor 0.80 applied to ALL stiffnesses (EI, EA, GJ, GAv)
+# C2.3(b): Additional factor tau_b applied to FLEXURAL stiffness (EI) only
+#   tau_b = 1.0 when alpha*Pr/Pns <= 0.5  (Eq. C2-2a)
+#   tau_b = 4*(alpha*Pr/Pns)*(1 - alpha*Pr/Pns) when > 0.5  (Eq. C2-2b)
+# C2.3(c): Permissible to use tau_b=1.0 with additional notional load 0.001*alpha*Yi
+#
+# Result (User Note p.16.1-31):
+#   Flexural: 0.8 * tau_b * EI  (via E*=0.8, I*=tau_b)
+#   Axial:    0.8 * EA           (via E*=0.8, automatic)
+#   Torsional:0.8 * GJ           (via G*=0.8)
+#   Shear:    0.8 * GAv          (via G*=0.8, automatic)
+#
+# Implementation: multiply E by 0.8 and G by 0.8, then I by tau_b
+DAM_FACTOR = 0.8       # C2.3(a): applied to E and G
+DAM_TAU_B  = 1.0       # C2.3(b)/(c): Fixed tau_b (matches SAP2000 "Tau-b Fixed")
+
 def get_model_data(input_path):
     try:
         with open(input_path, 'r') as f:
@@ -51,6 +70,15 @@ def get_model_data(input_path):
     except Exception as e:
         print(f"[ERROR] Gagal membaca JSON: {e}")
         return None
+
+def _get_group_names(data):
+    """Read group names from model data (set by Create). Returns (kolom, balok_induk, balok_anak)."""
+    gn = data.get('group_names', {})
+    return (
+        gn.get('kolom',       'Kolom'),
+        gn.get('balok_induk', 'Balok Induk'),
+        gn.get('balok_anak',  'Balok Anak'),
+    )
 
 def get_section_properties(sec):
     # Dimensi
@@ -190,7 +218,7 @@ def detect_structure_config_from_grid(data):
     }
     return config
 
-def classify_elements(elements_list):
+def classify_elements(elements_list, grp_balok_anak='Balok Anak'):
     """Separate elements into columns, primary beams, and secondary beams."""
     columns = []
     primary_beams = []
@@ -198,7 +226,7 @@ def classify_elements(elements_list):
     for elem in elements_list:
         if elem.get('type') == 'Column':
             columns.append(elem)
-        elif elem.get('group') == 'Secondary':
+        elif elem.get('group') == grp_balok_anak:
             secondary_beams.append(elem)
         else:
             primary_beams.append(elem)
@@ -353,6 +381,21 @@ def build_sub_panels(grid_x, grid_y, secondary_beams, floor_z_list, edge_tol=10.
                             })
 
     return sub_panels
+
+def identify_zones(grid_x, grid_y, secondary_beams, floor_z_list, edge_tol=10.0):
+    """Assign zone IDs to sub-panels for pattern live load (DAM only)."""
+    panels = build_sub_panels(grid_x, grid_y, secondary_beams, floor_z_list, edge_tol)
+    for i, sp in enumerate(panels):
+        sp['zone_id'] = i
+    return panels
+
+def sub_panel_in_zone(panel, zone, tol=10.0):
+    """Check if sub-panel centroid falls within a zone's boundaries."""
+    cx = (panel['x0'] + panel['x1']) / 2.0
+    cy = (panel['y0'] + panel['y1']) / 2.0
+    return (zone['x0'] - tol <= cx <= zone['x1'] + tol and
+            zone['y0'] - tol <= cy <= zone['y1'] + tol and
+            abs(panel.get('floor_z', 0) - zone.get('floor_z', 0)) < 100)
 
 def get_q_load(pos, span_len, qmax, xc, is_tri):
     """Load intensity at position pos within span of span_len.
@@ -954,6 +997,31 @@ def print_validation_report(validation_report):
     print("="*85)
 
 # ============================================================================
+# HELPER: Global → Local force transformation (used by gravity + seismic)
+# ============================================================================
+def calculate_local_forces(F_global, local_axes):
+    """Transform 6 global force components to local using rotation matrix from local_axes."""
+    u = local_axes.get('x_axis', [1, 0, 0])
+    v = local_axes.get('y_axis', [0, 1, 0])
+    w = local_axes.get('z_axis', [0, 0, 1])
+
+    R = [
+        [u[0], u[1], u[2]],
+        [v[0], v[1], v[2]],
+        [w[0], w[1], w[2]]
+    ]
+
+    Fx_loc = R[0][0]*F_global[0] + R[0][1]*F_global[1] + R[0][2]*F_global[2]
+    Fy_loc = R[1][0]*F_global[0] + R[1][1]*F_global[1] + R[1][2]*F_global[2]
+    Fz_loc = R[2][0]*F_global[0] + R[2][1]*F_global[1] + R[2][2]*F_global[2]
+
+    Mx_loc = R[0][0]*F_global[3] + R[0][1]*F_global[4] + R[0][2]*F_global[5]
+    My_loc = R[1][0]*F_global[3] + R[1][1]*F_global[4] + R[1][2]*F_global[5]
+    Mz_loc = R[2][0]*F_global[3] + R[2][1]*F_global[4] + R[2][2]*F_global[5]
+
+    return {"P":Fx_loc, "Fy":Fy_loc, "Fz":Fz_loc, "T":Mx_loc, "My":My_loc, "Mz":Mz_loc}
+
+# ============================================================================
 # 3. FUNGSI ANALISIS PER KASUS BEBAN (CORE LOGIC)
 # ============================================================================
 def run_load_case(data, case_type, pattern_def=None):
@@ -1014,29 +1082,11 @@ def run_load_case(data, case_type, pattern_def=None):
     _seismic_p = data.get('seismic_parameters', {})
     splice_offset_mm = float(_seismic_p.get('COL_SPLICE_OFFSET_MM', 1500)) if _seismic_p else 1500.0
 
-    try:
-        def calculate_local_forces(F_global, local_axes):
-            # Helper to transform Global Forces to Local
-            u = local_axes.get('x_axis', [1, 0, 0])
-            v = local_axes.get('y_axis', [0, 1, 0])
-            w = local_axes.get('z_axis', [0, 0, 1])
-            
-            R = [
-                [u[0], u[1], u[2]],
-                [v[0], v[1], v[2]],
-                [w[0], w[1], w[2]]
-            ]
-            
-            Fx_loc = R[0][0]*F_global[0] + R[0][1]*F_global[1] + R[0][2]*F_global[2]
-            Fy_loc = R[1][0]*F_global[0] + R[1][1]*F_global[1] + R[1][2]*F_global[2]
-            Fz_loc = R[2][0]*F_global[0] + R[2][1]*F_global[1] + R[2][2]*F_global[2]
-            
-            Mx_loc = R[0][0]*F_global[3] + R[0][1]*F_global[4] + R[0][2]*F_global[5]
-            My_loc = R[1][0]*F_global[3] + R[1][1]*F_global[4] + R[1][2]*F_global[5]
-            Mz_loc = R[2][0]*F_global[3] + R[2][1]*F_global[4] + R[2][2]*F_global[5]
-            
-            return {"P":Fx_loc, "Fy":Fy_loc, "Fz":Fz_loc, "T":Mx_loc, "My":My_loc, "Mz":Mz_loc}
+    # Secondary beam release: pin (M3 release) at both ends
+    SEC_BEAM_RELEASE = bool(data.get('secondary_beam_release', False))
+    _, _, _GRP_BALOK_ANAK = _get_group_names(data)
 
+    try:
         def get_internal_forces_at_station(elem_id, ratio, local_axes, is_vertical=False):
             """
             Get internal forces at any station along element.
@@ -1072,32 +1122,14 @@ def run_load_case(data, case_type, pattern_def=None):
             if len(forces) < 12:
                 # Single node output - 6 components
                 if is_vertical:
-                    # COLUMN coordinate transformation (verified from reaction matching):
-                    # 
-                    # OpenSees eleForce() for column - VERIFIED MAPPING:
-                    # Based on reaction matching:
-                    #   forces[0] = -122.77 matches F1 = 122.77 → Shear in Global X (V2)
-                    #   forces[1] = 84.82 matches F2 = 84.82 → Shear in Global Y (V3)
-                    #   forces[2] = -4694.15 → Axial (P) = F3 = 4694.15
-                    #   forces[3] = 111450 → Should be M1 (strong axis) = reaction M1
-                    #   forces[4] = 149580 → Should be M2 (weak axis) = reaction M2
-                    #   forces[5] → Torsion (should be ~0 for gravity)
-                    #
-                    # CORRECTED mapping to match reactions:
-                    #   P = forces[2] = Global Z = F3 (axial)
-                    #   V2 = forces[0] = Global X = F1 (shear about weak axis)
-                    #   V3 = forces[1] = Global Y = F2 (shear about strong axis)
-                    #   T = forces[5] = Torsion about vertical (should be small)
-                    #   M2 = forces[3] = Strong axis moment = reaction M1
-                    #   M3 = forces[4] = Weak axis moment = reaction M2 (larger)
-                    return {
-                        "P": -forces[2],    # Axial (local-x = Global Z) - compression negative
-                        "Fy": -forces[0],   # Shear in Global X 
-                        "Fz": forces[1],    # Shear in Global Y (raw - negate at output)
-                        "T": forces[5],     # Torsion (raw - negate at output)
-                        "My": -forces[3],   # Strong axis moment = reaction M1
-                        "Mz": -forces[4]    # Weak axis moment = reaction M2 (larger)
-                    }
+                    # Column: transform eleForce (global) → local using rotation matrix.
+                    # i-end convention: internal forces = -(eleForce at node i)
+                    # Adaptive to any COLUMN_ROTATION_DEG via local_axes.
+                    # Alternating sign: [-,+,-,+,-,+] converts eleForce to internal forces
+                    # Same pattern as beam 6-component (proven 100% match with SAP2000)
+                    F_int_i = [-forces[0], forces[1], -forces[2],
+                                forces[3], -forces[4], forces[5]]
+                    return calculate_local_forces(F_int_i, local_axes)
                 else:
                     # BEAM internal force mapping (Revit default local axes):
                     #
@@ -1130,23 +1162,15 @@ def run_load_case(data, case_type, pattern_def=None):
             
             # 12-component output: forces at both i-node and j-node
             if is_vertical:
-                # COLUMN coordinate mapping
-                start_internal = {
-                    "P": -forces[2],    # Axial at i-node
-                    "Fy": -forces[0],   # Shear X at i-node
-                    "Fz": forces[1],    # Shear Y at i-node (raw - negate at output)
-                    "T": forces[5],     # Torsion at i-node (raw - negate at output)
-                    "My": -forces[3],   # Strong axis moment at i-node
-                    "Mz": -forces[4]    # Weak axis moment at i-node
-                }
-                end_internal = {
-                    "P": forces[8],     # Axial at j-node
-                    "Fy": forces[6],    # Shear X at j-node
-                    "Fz": -forces[7],   # Shear Y at j-node
-                    "T": -forces[11],   # Torsion at j-node
-                    "My": forces[9],    # Strong axis moment at j-node
-                    "Mz": forces[10]    # Weak axis moment at j-node
-                }
+                # Column: transform eleForce (global) → local using rotation matrix.
+                # i-end: internal = -(eleForce), j-end: internal = +(eleForce)
+                # Alternating sign: i-end [-,+,-,+,-,+], j-end [+,-,+,-,+,-]
+                F_int_i = [-forces[0], forces[1], -forces[2],
+                            forces[3], -forces[4], forces[5]]
+                start_internal = calculate_local_forces(F_int_i, local_axes)
+                F_int_j = [forces[6], -forces[7], forces[8],
+                           -forces[9], forces[10], -forces[11]]
+                end_internal = calculate_local_forces(F_int_j, local_axes)
             else:
                 # BEAM (Revit default): Fy=minor(horizontal), Fz=major(vertical)
                 start_internal = {
@@ -1849,9 +1873,10 @@ def run_load_case(data, case_type, pattern_def=None):
                         node_connecting_depths[key] = {'col_d': 0, 'beam_d': 0}
                     
                     if item['is_vertical']:
-                        # Column connects here — store its width (b_mm) for beam offsets
+                        # Column connects here — store max cross-section dimension
+                        # for beam offsets (rotation-aware: beam may face d or b)
                         node_connecting_depths[key]['col_d'] = max(
-                            node_connecting_depths[key]['col_d'], b_mm)
+                            node_connecting_depths[key]['col_d'], d_mm, b_mm)
                     else:
                         # Beam connects here — store its depth (d_mm) for column offsets
                         node_connecting_depths[key]['beam_d'] = max(
@@ -1872,9 +1897,10 @@ def run_load_case(data, case_type, pattern_def=None):
         transf_counter = 1  # Unique transform tag counter
 
         # --- SECONDARY BEAM CONNECTIONS ---
-        _, _, sec_beams_list = classify_elements(elements_list)
+        _, _, sec_beams_list = classify_elements(elements_list, _GRP_BALOK_ANAK)
         parent_connections, sec_beam_directions = find_secondary_connections(sec_beams_list, elements_list)
         connection_node_map = {}  # (parent_id, fraction) -> node_id at connection point
+        used_ele_ids = set()  # Track used sub-element IDs to prevent collisions
 
         for item in processed_elements:
             sec = item['raw']['section']
@@ -1961,10 +1987,6 @@ def run_load_case(data, case_type, pattern_def=None):
             G = float(mat.get('G_MPa', 78846))  # SAP2000 BJ REVIT: G=78846 MPa
             A, J, Iz, Iy, Avy, Avz = get_section_properties(sec)
             
-            # Exact SAP2000 Torsional Constants to fix M2 lateral coupling
-            if item['is_vertical']: J = 806975.4
-            else: J = 132290.5
-            
             # --- STIFFNESS CORRECTION DISABLED ---
             # With rigid end zones (RIGID_END_ZONE_FACTOR > 0), empirical stiffness
             # correction is no longer needed. Rigid zones properly shorten the
@@ -2028,7 +2050,16 @@ def run_load_case(data, case_type, pattern_def=None):
                 # Iz (OpenSees) = I about local-z → resists horizontal (minor) forces
                 Ops_Iy = Iz  # Strong axis → bending about local-y resists vertical
                 Ops_Iz = Iy  # Weak axis   → bending about local-z resists horizontal
-            
+
+            # --- DAM Stiffness Reduction (AISC 360-22 C2.3) ---
+            # C2.3(a): 0.8 on ALL stiffnesses (E*0.8 -> EA, EI; G*0.8 -> GJ, GAv)
+            # C2.3(b): tau_b on flexural only (I *= tau_b)
+            if data.get("_analysis_method") == "DAM":
+                E *= DAM_FACTOR          # 0.8 -> reduces EA and EI
+                G *= DAM_FACTOR          # 0.8 -> reduces GJ and GAv
+                Ops_Iy *= DAM_TAU_B      # tau_b on flexural (1.0 for fixed)
+                Ops_Iz *= DAM_TAU_B      # tau_b on flexural (1.0 for fixed)
+
             if item['is_vertical']:
                 # --- KOLOM (SINGLE ELEMENT) ---
                 # Using ElasticTimoshenkoBeam as it accounts for shear deformation
@@ -2096,7 +2127,7 @@ def run_load_case(data, case_type, pattern_def=None):
 
                 # --- DETERMINE SEGMENT BOUNDARIES ---
                 # If this beam has secondary beam connections, insert split points
-                is_secondary = item['raw'].get('group') == 'Secondary'
+                is_secondary = item['raw'].get('group') == _GRP_BALOK_ANAK
                 conn_list = parent_connections.get(item['id'], [])
 
                 # Build list of fraction boundaries for segments
@@ -2112,6 +2143,36 @@ def run_load_case(data, case_type, pattern_def=None):
                 sub_ids = []
                 sub_ele_counter = 0
                 prev_node = beam_n_start
+
+                # --- SECONDARY BEAM RELEASE (M3 pin at both ends) ---
+                # Only release strong-axis rotation (M3), constrain all other DOFs.
+                # Beam along X: release DOF 5 (Ry=strong axis), constrain 1,2,3,4,6
+                # Beam along Y: release DOF 4 (Rx=strong axis), constrain 1,2,3,5,6
+                release_end_node = None
+                if is_secondary and SEC_BEAM_RELEASE:
+                    if abs(vx) > abs(vy):
+                        _rel_dofs = (1, 2, 3, 4, 6)  # X-beam: release DOF 5
+                    else:
+                        _rel_dofs = (1, 2, 3, 5, 6)  # Y-beam: release DOF 4
+
+                    # Release at start
+                    sc = node_coords[beam_n_start]
+                    rel_start = next_node_id
+                    node_coords[rel_start] = sc
+                    ops.node(rel_start, *sc)
+                    res["nodes"][rel_start] = {"coords": sc, "disp": [0]*6, "reaction": None}
+                    next_node_id += 1
+                    ops.equalDOF(beam_n_start, rel_start, *_rel_dofs)
+                    prev_node = rel_start
+
+                    # Release at end: prepare node (will be used as curr_node at last sub)
+                    ec = node_coords[beam_n_end]
+                    release_end_node = next_node_id
+                    node_coords[release_end_node] = ec
+                    ops.node(release_end_node, *ec)
+                    res["nodes"][release_end_node] = {"coords": ec, "disp": [0]*6, "reaction": None}
+                    next_node_id += 1
+                    ops.equalDOF(beam_n_end, release_end_node, *_rel_dofs)
 
                 for seg_idx in range(len(seg_fracs) - 1):
                     seg_frac_start = seg_fracs[seg_idx]
@@ -2132,7 +2193,7 @@ def run_load_case(data, case_type, pattern_def=None):
                         is_last_segment = (seg_idx == len(seg_fracs) - 2)
 
                         if is_last_sub and is_last_segment:
-                            curr_node = beam_n_end
+                            curr_node = release_end_node if release_end_node else beam_n_end
                         elif is_last_sub and not is_last_segment:
                             # Connection point — parent beam split for secondary beam
                             conn_frac = seg_fracs[seg_idx + 1]
@@ -2198,7 +2259,10 @@ def run_load_case(data, case_type, pattern_def=None):
 
                         sub_ele_id = item['id'] * 100 + sub_ele_counter
                         if sub_ele_id > 2000000000:
-                            sub_ele_id = int(sub_ele_id % 1000000 + 900000)
+                            sub_ele_id = int(sub_ele_id % 100000000 + 900000)
+                        while sub_ele_id in used_ele_ids:
+                            sub_ele_id += 1
+                        used_ele_ids.add(sub_ele_id)
 
                         # Create per-sub-element transform WITH rigid end zone offsets
                         # Only first and last sub-elements of the WHOLE beam get offsets
@@ -2366,6 +2430,11 @@ def run_load_case(data, case_type, pattern_def=None):
                 subs = sub_elements_map.get(item['id'], [(item['id'], item['length'])])
 
                 for panel in sub_panels:
+                    # Zone filter for pattern live load
+                    _zone_filter = pattern_def.get('zone_filter') if pattern_def else None
+                    if _zone_filter is not None:
+                        if not sub_panel_in_zone(panel, _zone_filter):
+                            continue
                     # Floor level check
                     if abs(beam_z - panel['floor_z']) > 100:
                         continue
@@ -2524,25 +2593,22 @@ def run_load_case(data, case_type, pattern_def=None):
                           critical_stations = find_critical_stations(eid, local_axes, element_length, num_samples=5, is_vertical=is_vert)
                           
                           # Build stations list for output
-                          # Build stations list for output
-                          # Column sign correction: V3, T, M2 need negation for SAP2000 convention
-                          # This is done at OUTPUT level (not extraction) so interpolation formula works correctly
-                          col_sign = -1.0 if is_vert else 1.0
-                          
+                          # calculate_local_forces already handles rotation-adaptive
+                          # global→local transformation. Only My needs SAP2000 sign flip.
                           stations_output = []
                           for station_data in critical_stations:
                               forces = station_data['forces']
-                              
+
                               station_ratio = station_data['station']
-                              actual_distance = station_ratio * element_length  # Calculate actual distance in mm
-                              
+                              actual_distance = station_ratio * element_length
+
                               stations_output.append({
                                   "station": round(station_ratio, 4),
-                                  "distance_mm": round(actual_distance, 2),  # Actual distance
+                                  "distance_mm": round(actual_distance, 2),
                                   "P":  round(forces["P"], 2),
                                   "Fy": round(forces["Fy"], 2),
-                                  "Fz": round(col_sign * forces["Fz"], 2),  # Negate for columns
-                                  "T":  round(col_sign * forces["T"], 2),   # Negate for columns
+                                  "Fz": round(forces["Fz"], 2),
+                                  "T":  round(forces["T"], 2),
                                   "My": round(-forces["My"], 2),  # SAP2000 sign convention
                                   "Mz": round(forces["Mz"], 2)
                               })
@@ -2709,7 +2775,9 @@ def run_seismic_analysis(data, direction='EQx'):
     elements_list = data.get('model_elements', [])
     SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))
     SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))
-    
+    SEC_BEAM_RELEASE_SEIS = bool(data.get('secondary_beam_release', False))
+    _, _, _GRP_BALOK_ANAK = _get_group_names(data)
+
     # --- Detect structure config DYNAMICALLY ---
     struct_config = detect_structure_config_from_grid(data)
     n_stories = struct_config['n_stories']
@@ -2781,15 +2849,27 @@ def run_seismic_analysis(data, direction='EQx'):
             elem_type = elem.get('type', '')
             
             if elem_type == 'Column':
-                # Column: 100% to the floor at the TOP of the column
-                # (Section cut approach: horizontal cut at each floor level
-                #  captures the full weight of columns below that floor)
+                # Column: tributary mass approach (50/50 split)
+                # Top half → floor at top of column
+                # Bottom half → floor at bottom (or base if z_bot ≈ 0)
+                z_bot = min(start_z, end_z)
                 z_top = max(start_z, end_z)
+                half_w = w_element_N / 2.0
 
+                # Top half → floor at top
                 for fi in range(n_stories):
                     if abs(z_top - floor_z[fi]) < 100:
-                        Wi_N[fi] += w_element_N
+                        Wi_N[fi] += half_w
                         break
+
+                # Bottom half → floor at bottom, or base
+                if abs(z_bot - min_z) < 100:
+                    base_mass_N += half_w
+                else:
+                    for fi in range(n_stories):
+                        if abs(z_bot - floor_z[fi]) < 100:
+                            Wi_N[fi] += half_w
+                            break
                             
             else:
                 # Beam: 100% to the floor where beam is located
@@ -2984,9 +3064,10 @@ def run_seismic_analysis(data, direction='EQx'):
         G_ACC = 9810.0  # mm/s^2
 
         # Secondary beam connections (for parent beam splitting)
-        _, _, sec_beams_seismic = classify_elements(elements_list)
+        _, _, sec_beams_seismic = classify_elements(elements_list, _GRP_BALOK_ANAK)
         parent_connections_seis, sec_beam_dirs_seis = find_secondary_connections(sec_beams_seismic, elements_list)
         connection_node_map_seis = {}
+        used_ele_ids = set()  # Track used sub-element IDs to prevent collisions
 
         for item in processed_elements:
             sec = item['raw']['section']
@@ -2995,12 +3076,7 @@ def run_seismic_analysis(data, direction='EQx'):
             # Section properties
             E = float(mat.get('E_MPa', 205000))
             G = float(mat.get('G_MPa', 78846))  # Use G from JSON directly (SAP2000 BJ REVIT)
-            A = float(sec.get('Area_mm2', 0))
-            J = 806975.4 if item['is_vertical'] else 132290.5
-            Iz = float(sec.get('Iz_mm4', 0))
-            Iy = float(sec.get('Iy_mm4', 0))
-            Avz = float(sec.get('Avz_mm2', 0))
-            Avy = float(sec.get('Avy_mm2', 0))
+            A, J, Iz, Iy, Avy, Avz = get_section_properties(sec)
             
             if A <= 0: continue
             
@@ -3020,7 +3096,15 @@ def run_seismic_analysis(data, direction='EQx'):
             Ops_Iz = Iy    # weak axis   → bending about local-z
             Ops_Avy = Avy  # flange shear → Vy (pairs with Ops_Iz, weak axis)
             Ops_Avz = Avz  # web shear   → Vz (pairs with Ops_Iy, strong axis)
-            
+
+            # --- DAM Stiffness Reduction (AISC 360-22 C2.3) ---
+            # C2.3(a): 0.8 on ALL stiffnesses; C2.3(b): tau_b on flexural only
+            if data.get("_analysis_method") == "DAM":
+                E *= DAM_FACTOR          # 0.8 -> reduces EA and EI
+                G *= DAM_FACTOR          # 0.8 -> reduces GJ and GAv
+                Ops_Iy *= DAM_TAU_B      # tau_b on flexural (1.0 for fixed)
+                Ops_Iz *= DAM_TAU_B      # tau_b on flexural (1.0 for fixed)
+
             # Rigid end zone offsets
             dI = [0.0, 0.0, 0.0]
             dJ = [0.0, 0.0, 0.0]
@@ -3089,7 +3173,10 @@ def run_seismic_analysis(data, direction='EQx'):
 
                     sub_ele_id = item['id'] * 100 + k_sub
                     if sub_ele_id > 2000000000:
-                        sub_ele_id = int(sub_ele_id % 1000000 + 900000)
+                        sub_ele_id = int(sub_ele_id % 100000000 + 900000)
+                    while sub_ele_id in used_ele_ids:
+                        sub_ele_id += 1
+                    used_ele_ids.add(sub_ele_id)
 
                     sub_transf_tag = transf_counter
                     transf_counter += 1
@@ -3143,7 +3230,7 @@ def run_seismic_analysis(data, direction='EQx'):
                 vy_v = beam_coord_end[1]-beam_coord_start[1]
                 vz_c = beam_coord_end[2]-beam_coord_start[2]
 
-                is_secondary = item['raw'].get('group') == 'Secondary'
+                is_secondary = item['raw'].get('group') == _GRP_BALOK_ANAK
                 conn_list = parent_connections_seis.get(item['id'], [])
 
                 seg_fracs = sorted(set(
@@ -3153,6 +3240,31 @@ def run_seismic_analysis(data, direction='EQx'):
                 total_num_subs = 8
                 sub_ele_counter = 0
                 prev_node = beam_start
+
+                # --- SECONDARY BEAM RELEASE (seismic, M3 pin) ---
+                release_end_node_s = None
+                if is_secondary and SEC_BEAM_RELEASE_SEIS:
+                    if abs(vx) > abs(vy_v):
+                        _rel_dofs = (1, 2, 3, 4, 6)  # X-beam: release DOF 5
+                    else:
+                        _rel_dofs = (1, 2, 3, 5, 6)  # Y-beam: release DOF 4
+
+                    sc = node_coords[beam_start]
+                    rel_s = next_node_id
+                    node_coords[rel_s] = sc
+                    ops.node(rel_s, *sc)
+                    res["nodes"][rel_s] = {"coords": sc, "disp": [0]*6, "reaction": None}
+                    next_node_id += 1
+                    ops.equalDOF(beam_start, rel_s, *_rel_dofs)
+                    prev_node = rel_s
+
+                    ec = node_coords[beam_end]
+                    release_end_node_s = next_node_id
+                    node_coords[release_end_node_s] = ec
+                    ops.node(release_end_node_s, *ec)
+                    res["nodes"][release_end_node_s] = {"coords": ec, "disp": [0]*6, "reaction": None}
+                    next_node_id += 1
+                    ops.equalDOF(beam_end, release_end_node_s, *_rel_dofs)
 
                 for seg_idx in range(len(seg_fracs) - 1):
                     seg_frac_start = seg_fracs[seg_idx]
@@ -3165,7 +3277,7 @@ def run_seismic_analysis(data, direction='EQx'):
                         is_last_segment = (seg_idx == len(seg_fracs) - 2)
 
                         if is_last_sub and is_last_segment:
-                            curr_node = beam_end
+                            curr_node = release_end_node_s if release_end_node_s else beam_end
                         elif is_last_sub and not is_last_segment:
                             conn_frac = seg_fracs[seg_idx + 1]
 
@@ -3223,7 +3335,10 @@ def run_seismic_analysis(data, direction='EQx'):
 
                         sub_ele_id = item['id'] * 100 + sub_ele_counter
                         if sub_ele_id > 2000000000:
-                            sub_ele_id = int(sub_ele_id % 1000000 + 900000)
+                            sub_ele_id = int(sub_ele_id % 100000000 + 900000)
+                        while sub_ele_id in used_ele_ids:
+                            sub_ele_id += 1
+                        used_ele_ids.add(sub_ele_id)
 
                         sub_transf_tag = transf_counter
                         transf_counter += 1
@@ -3416,41 +3531,40 @@ def run_seismic_analysis(data, direction='EQx'):
                 local_axes = item['raw'].get('local_axes', {})
                 element_length = item['raw'].get('topology', {}).get('length_mm', 0)
                 is_vert = item.get('is_vertical', False)
-                col_sign = -1.0 if is_vert else 1.0
 
                 stations_output = []
                 cumulative_dist = 0.0
 
                 if is_vert:
-                    # COLUMN: Global-to-local mapping (verified in gravity path)
-                    # Column vecxz=[1,0,0]: local-x=Z, local-y=-Y, local-z=X
-                    # eleForce global: [Fx,Fy,Fz,Mx,My,Mz, Fx,Fy,Fz,Mx,My,Mz]
+                    # COLUMN: transform eleForce (global) → local using rotation matrix
                     for i, (sub_eid, sub_len) in enumerate(subs):
                         f = ops.eleForce(sub_eid)
 
                         if i == 0:
-                            fi = {"P": -f[2], "Fy": -f[0], "Fz": f[1],
-                                  "T": f[5], "My": -f[3], "Mz": -f[4]}
+                            # Alternating sign: i-end [-,+,-,+,-,+]
+                            F_int_i = [-f[0], f[1], -f[2], f[3], -f[4], f[5]]
+                            fi = calculate_local_forces(F_int_i, local_axes)
                             stations_output.append({
                                 "station": 0.0, "distance_mm": 0.0,
                                 "P":  round(fi["P"], 2),
                                 "Fy": round(fi["Fy"], 2),
-                                "Fz": round(col_sign * fi["Fz"], 2),
-                                "T":  round(col_sign * fi["T"], 2),
+                                "Fz": round(fi["Fz"], 2),
+                                "T":  round(fi["T"], 2),
                                 "My": round(-fi["My"], 2),
                                 "Mz": round(fi["Mz"], 2)
                             })
 
                         j_dist = cumulative_dist + sub_len
                         j_ratio = j_dist / element_length if element_length > 0 else 0
-                        fj = {"P": f[8], "Fy": f[6], "Fz": -f[7],
-                              "T": -f[11], "My": f[9], "Mz": f[10]}
+                        # Alternating sign: j-end [+,-,+,-,+,-]
+                        F_int_j = [f[6], -f[7], f[8], -f[9], f[10], -f[11]]
+                        fj = calculate_local_forces(F_int_j, local_axes)
                         stations_output.append({
                             "station": round(j_ratio, 4), "distance_mm": round(j_dist, 2),
                             "P":  round(fj["P"], 2),
                             "Fy": round(fj["Fy"], 2),
-                            "Fz": round(col_sign * fj["Fz"], 2),
-                            "T":  round(col_sign * fj["T"], 2),
+                            "Fz": round(fj["Fz"], 2),
+                            "T":  round(fj["T"], 2),
                             "My": round(-fj["My"], 2),
                             "Mz": round(fj["Mz"], 2)
                         })
@@ -3585,8 +3699,11 @@ def run_seismic_analysis(data, direction='EQx'):
             # Story drift: Δi = δi - δ(i-1) (Gambar 10)
             delta_i = delta_x - prev_delta_x
             
-            # Story height
-            hsx_mm = story_height_mm
+            # Story height (per-floor, supports non-uniform heights)
+            if fi + 1 < len(z_levels):
+                hsx_mm = z_levels[fi + 1] - z_levels[fi]
+            else:
+                hsx_mm = story_height_mm
             
             # Drift limit: Δa = 0.025·hsx (Tabel 20, Kategori Risiko I/II)
             delta_a = 0.025 * hsx_mm
@@ -3814,11 +3931,13 @@ def run_modal_analysis(data, num_modes=12):
     seismic_params = data.get('seismic_parameters', {})
     SLAB_SW_PRESSURE = float(data.get('slab_sw_pressure', 0.0))
     SLAB_ADL_PRESSURE = float(data.get('slab_adl_pressure', 0.0))
-    
+    SEC_BEAM_RELEASE_MODAL = bool(data.get('secondary_beam_release', False))
+    _, _, _GRP_BALOK_ANAK = _get_group_names(data)
+
     # Shell plate configuration
     slab_plate = data.get('slab_plate', {})
     plate_enabled = slab_plate.get('enabled', False)
-    
+
     struct_config = detect_structure_config_from_grid(data)
     n_stories = struct_config['n_stories']
     story_height_mm = struct_config['story_height']
@@ -3832,10 +3951,9 @@ def run_modal_analysis(data, num_modes=12):
     
     GRAVITY = 9.81  # m/s^2
     
-    # Plate mode: rigid diaphragm limits to 3 DOFs per floor
-    # Legacy mode: no diaphragm, keep requested num_modes (SAP2000 uses 12)
-    if plate_enabled:
-        num_modes = min(num_modes, 3 * n_stories)
+    # With rigid diaphragm (plate or legacy), meaningful lateral modes = 3 per floor
+    # (UX, UY, RZ). Cap here to avoid ARPACK failure on small models.
+    num_modes = min(num_modes, 3 * n_stories)
     
     print(f"  Modal Config: {n_stories} stories, {n_span_x}x{n_span_y} spans, {num_modes} modes")
     
@@ -4007,7 +4125,7 @@ def run_modal_analysis(data, num_modes=12):
         _rigid_bar_counter = 0  # Counter for rigid bar element IDs
 
         # Secondary beam connections (for parent beam splitting)
-        _, _, sec_beams_modal = classify_elements(elements_list)
+        _, _, sec_beams_modal = classify_elements(elements_list, _GRP_BALOK_ANAK)
         parent_connections_modal, sec_beam_dirs_modal = find_secondary_connections(sec_beams_modal, elements_list)
         connection_node_map_modal = {}
         connection_floor_nids = set()  # Track connection joints for mass/diaphragm
@@ -4036,6 +4154,8 @@ def run_modal_analysis(data, num_modes=12):
 
                 _beam_centroid_cache[cache_key] = centroid_nid
             return _beam_centroid_cache[cache_key]
+
+        used_ele_ids = set()  # Track used sub-element IDs to prevent collisions
 
         for item in processed_elements:
             sec = item['raw']['section']
@@ -4073,6 +4193,14 @@ def run_modal_analysis(data, num_modes=12):
             Ops_Iy = Iz; Ops_Iz = Iy
             Ops_Avy = Avy; Ops_Avz = Avz
 
+            # --- DAM Stiffness Reduction (AISC 360-22 C2.3) ---
+            # C2.3(a): 0.8 on ALL stiffnesses; C2.3(b): tau_b on flexural only
+            if data.get("_analysis_method") == "DAM":
+                E *= DAM_FACTOR          # 0.8 -> reduces EA and EI
+                G_mat *= DAM_FACTOR      # 0.8 -> reduces GJ and GAv
+                Ops_Iy *= DAM_TAU_B      # tau_b on flexural (1.0 for fixed)
+                Ops_Iz *= DAM_TAU_B      # tau_b on flexural (1.0 for fixed)
+
             n1, n2 = item['nodes']
             n_start_elem = n1
             n_end_elem = n2
@@ -4109,7 +4237,7 @@ def run_modal_analysis(data, num_modes=12):
             L_elem = math.sqrt(dx_e**2 + dy_e**2 + dz_e**2)
 
             # --- Segment-aware subdivision (supports secondary beam split) ---
-            is_secondary = item['raw'].get('group') == 'Secondary'
+            is_secondary = item['raw'].get('group') == _GRP_BALOK_ANAK
             conn_list_modal = parent_connections_modal.get(item['id'], [])
 
             seg_fracs = sorted(set(
@@ -4126,6 +4254,29 @@ def run_modal_analysis(data, num_modes=12):
             sub_ele_counter = 0
             prev_node = beam_start
 
+            # --- SECONDARY BEAM RELEASE (modal, M3 pin) ---
+            release_end_node_m = None
+            if is_secondary and SEC_BEAM_RELEASE_MODAL:
+                if abs(vx) > abs(vy_v):
+                    _rel_dofs = (1, 2, 3, 4, 6)  # X-beam: release DOF 5
+                else:
+                    _rel_dofs = (1, 2, 3, 5, 6)  # Y-beam: release DOF 4
+
+                sc = node_coords[beam_start]
+                rel_s = next_node_id
+                node_coords[rel_s] = sc
+                ops.node(rel_s, *sc)
+                next_node_id += 1
+                ops.equalDOF(beam_start, rel_s, *_rel_dofs)
+                prev_node = rel_s
+
+                ec = node_coords[beam_end]
+                release_end_node_m = next_node_id
+                node_coords[release_end_node_m] = ec
+                ops.node(release_end_node_m, *ec)
+                next_node_id += 1
+                ops.equalDOF(beam_end, release_end_node_m, *_rel_dofs)
+
             for seg_idx in range(len(seg_fracs) - 1):
                 seg_frac_start = seg_fracs[seg_idx]
                 seg_frac_end = seg_fracs[seg_idx + 1]
@@ -4139,7 +4290,7 @@ def run_modal_analysis(data, num_modes=12):
                     is_last_segment = (seg_idx == len(seg_fracs) - 2)
 
                     if is_last_sub and is_last_segment:
-                        curr_node = beam_end
+                        curr_node = release_end_node_m if release_end_node_m else beam_end
                     elif is_last_sub and not is_last_segment:
                         # Connection point — create floor joint + centroid node
                         conn_frac = seg_fracs[seg_idx + 1]
@@ -4184,7 +4335,10 @@ def run_modal_analysis(data, num_modes=12):
 
                     sub_ele_id = item['id'] * 100 + sub_ele_counter
                     if sub_ele_id > 2000000000:
-                        sub_ele_id = int(sub_ele_id % 1000000 + 900000)
+                        sub_ele_id = int(sub_ele_id % 100000000 + 900000)
+                    while sub_ele_id in used_ele_ids:
+                        sub_ele_id += 1
+                    used_ele_ids.add(sub_ele_id)
 
                     sub_transf_tag = transf_counter
                     transf_counter += 1
@@ -4472,10 +4626,19 @@ def run_modal_analysis(data, num_modes=12):
 
         print(f"\n  Running eigenvalue analysis ({num_modes} modes)...")
 
-        # Default eigensolver (compatible with Penalty constraints)
-        # Note: -fullGenLapack produces negative eigenvalues with Penalty
-        eigenvalues = ops.eigen(num_modes)
-        print(f"  Eigen solver (default) completed successfully")
+        # Default eigensolver (ARPACK — compatible with Penalty constraints)
+        # Fallback to fullGenLapack for small models where ARPACK factorization fails
+        try:
+            eigenvalues = ops.eigen(num_modes)
+            print(f"  Eigen solver (ARPACK) completed successfully")
+        except Exception as e_arpack:
+            print(f"  ARPACK failed: {e_arpack}")
+            print(f"  Retrying with fullGenLapack solver...")
+            eigenvalues = ops.eigen('-fullGenLapack', num_modes)
+            n_pos = sum(1 for ev in eigenvalues if ev > 1e-6)
+            if n_pos == 0:
+                raise RuntimeError("No positive eigenvalues found")
+            print(f"  fullGenLapack solver completed ({n_pos}/{len(eigenvalues)} positive modes)")
         
         print(f"  Successfully computed {len(eigenvalues)} modes")
         print(f"  Raw eigenvalues: {[f'{e:.4f}' for e in eigenvalues]}")
@@ -4512,53 +4675,88 @@ def run_modal_analysis(data, num_modes=12):
         G_ACC_MM = 9810.0
         
         if plate_enabled:
-            # Shell plate mode: compute from ALL shell floor nodes
-            # Mass comes from shell density + ADL node mass + frame SW extra
-            for mode_info in modes_data:
+            # Shell plate mode: compute participation factors for ALL modes first,
+            # then apply Jacobi rotation for near-degenerate pairs
+            n_pm = len(modes_data)
+            pf_Lx = [0.0] * n_pm
+            pf_Ly = [0.0] * n_pm
+            pf_Lrz = [0.0] * n_pm
+            pf_Mgen = [0.0] * n_pm
+            pf_total_mass = 0.0
+            pf_total_Iz = 0.0
+
+            for idx, mode_info in enumerate(modes_data):
                 mode_num = mode_info["mode"]
-                
                 Lx_pf = 0.0; Ly_pf = 0.0; Lrz_pf = 0.0
-                Mx_gen = 0.0; My_gen = 0.0; Mrz_gen = 0.0
+                Mgen_pf = 0.0
                 total_mass_pf = 0.0; total_Iz_pf = 0.0
-                
+
                 for fi in range(n_stories):
                     floor_nids = shell_floor_nodes.get(fi, [])
                     n_fn = len(floor_nids)
                     if n_fn == 0: continue
-                    
-                    # Approximate mass per node (total Wi / n_nodes)
                     m_per_node = Wi_N[fi] / G_ACC_MM / n_fn
-                    
+
                     for snid in floor_nids:
                         sc = node_coords[snid]
                         dx_c = sc[0] - center_x
                         dy_c = sc[1] - center_y
                         r2 = dx_c**2 + dy_c**2
                         Iz_node = m_per_node * r2
-                        
+
                         phi_x = ops.nodeEigenvector(snid, mode_num, 1)
                         phi_y = ops.nodeEigenvector(snid, mode_num, 2)
                         phi_rz = ops.nodeEigenvector(snid, mode_num, 6)
-                        
+
                         Lx_pf += m_per_node * phi_x
                         Ly_pf += m_per_node * phi_y
                         Lrz_pf += Iz_node * phi_rz
-                        
-                        Mx_gen += m_per_node * phi_x**2
-                        My_gen += m_per_node * phi_y**2
-                        Mrz_gen += Iz_node * phi_rz**2
-                        
+                        Mgen_pf += m_per_node * (phi_x**2 + phi_y**2) + Iz_node * phi_rz**2
+
                         total_mass_pf += m_per_node
                         total_Iz_pf += Iz_node
-                
-                meff_x = (Lx_pf**2 / Mx_gen) if abs(Mx_gen) > 1e-20 else 0.0
-                meff_y = (Ly_pf**2 / My_gen) if abs(My_gen) > 1e-20 else 0.0
-                meff_rz = (Lrz_pf**2 / Mrz_gen) if abs(Mrz_gen) > 1e-20 else 0.0
-                
-                mode_info["UX_ratio"] = round(meff_x / total_mass_pf, 8) if total_mass_pf > 0 else 0.0
-                mode_info["UY_ratio"] = round(meff_y / total_mass_pf, 8) if total_mass_pf > 0 else 0.0
-                mode_info["RZ_ratio"] = round(meff_rz / total_Iz_pf, 8) if total_Iz_pf > 0 else 0.0
-                
+
+                pf_Lx[idx] = Lx_pf
+                pf_Ly[idx] = Ly_pf
+                pf_Lrz[idx] = Lrz_pf
+                pf_Mgen[idx] = Mgen_pf
+                pf_total_mass = total_mass_pf
+                pf_total_Iz = total_Iz_pf
+
+            # Jacobi rotation for near-degenerate mode pairs (plate mode)
+            DEGEN_TOL = 0.05
+            for i in range(n_pm):
+                for j in range(i + 1, n_pm):
+                    ev_i = modes_data[i]['eigenvalue']
+                    ev_j = modes_data[j]['eigenvalue']
+                    if min(ev_i, ev_j) <= 0:
+                        continue
+                    if abs(ev_i - ev_j) / max(ev_i, ev_j) > DEGEN_TOL:
+                        continue
+                    S12 = (pf_Lx[i]*pf_Lx[j] + pf_Ly[i]*pf_Ly[j]) / pf_total_mass + pf_Lrz[i]*pf_Lrz[j] / pf_total_Iz if (pf_total_mass > 0 and pf_total_Iz > 0) else 0.0
+                    if abs(S12) < 1e-20:
+                        continue
+                    S11 = (pf_Lx[i]**2 + pf_Ly[i]**2) / pf_total_mass + pf_Lrz[i]**2 / pf_total_Iz
+                    S22 = (pf_Lx[j]**2 + pf_Ly[j]**2) / pf_total_mass + pf_Lrz[j]**2 / pf_total_Iz
+                    theta = 0.5 * math.atan2(2.0 * S12, S11 - S22)
+                    c = math.cos(theta)
+                    s = math.sin(theta)
+                    pf_Lx[i], pf_Lx[j] = c*pf_Lx[i] + s*pf_Lx[j], -s*pf_Lx[i] + c*pf_Lx[j]
+                    pf_Ly[i], pf_Ly[j] = c*pf_Ly[i] + s*pf_Ly[j], -s*pf_Ly[i] + c*pf_Ly[j]
+                    pf_Lrz[i], pf_Lrz[j] = c*pf_Lrz[i] + s*pf_Lrz[j], -s*pf_Lrz[i] + c*pf_Lrz[j]
+                    pf_Mgen[i], pf_Mgen[j] = c**2*pf_Mgen[i] + s**2*pf_Mgen[j], s**2*pf_Mgen[i] + c**2*pf_Mgen[j]
+
+            # Compute ratios from (rotated) participation factors
+            for idx, mode_info in enumerate(modes_data):
+                mg = pf_Mgen[idx]
+                meff_x = (pf_Lx[idx]**2 / mg) if abs(mg) > 1e-20 else 0.0
+                meff_y = (pf_Ly[idx]**2 / mg) if abs(mg) > 1e-20 else 0.0
+                meff_rz = (pf_Lrz[idx]**2 / mg) if abs(mg) > 1e-20 else 0.0
+
+                mode_info["UX_ratio"] = round(meff_x / pf_total_mass, 8) if pf_total_mass > 0 else 0.0
+                mode_info["UY_ratio"] = round(meff_y / pf_total_mass, 8) if pf_total_mass > 0 else 0.0
+                mode_info["RZ_ratio"] = round(meff_rz / pf_total_Iz, 8) if pf_total_Iz > 0 else 0.0
+
                 ratios = {"UX": mode_info["UX_ratio"], "UY": mode_info["UY_ratio"], "RZ": mode_info["RZ_ratio"]}
                 dominant = max(ratios, key=ratios.get)
                 mode_info["dominant"] = dominant
@@ -4677,9 +4875,35 @@ def run_modal_analysis(data, num_modes=12):
                         M_cross[j][k] -= alpha * M_cross[i][k]
                         M_cross[k][j] = M_cross[j][k]
 
-            # Step 3: Compute participation from M-orthogonalized quantities
-            # Note: near-degenerate modes may show mixed UX/RZ participation, but
-            # cumulative sums are guaranteed to be correct (100% for each direction).
+            # Step 2.5: Jacobi rotation for near-degenerate mode pairs
+            # When two eigenvalues are nearly identical, ARPACK returns arbitrary
+            # linear combinations of the true mode shapes. Jacobi rotation separates
+            # them so each mode aligns with a single direction (UX, UY, or RZ),
+            # matching SAP2000's behavior.
+            DEGEN_TOL = 0.05  # 5% eigenvalue relative difference
+            for i in range(n_modes):
+                for j in range(i + 1, n_modes):
+                    ev_i = modes_data[i]['eigenvalue']
+                    ev_j = modes_data[j]['eigenvalue']
+                    if min(ev_i, ev_j) <= 0:
+                        continue
+                    if abs(ev_i - ev_j) / max(ev_i, ev_j) > DEGEN_TOL:
+                        continue
+                    # Cross-product of normalized participation factors
+                    S12 = (Lx[i]*Lx[j] + Ly[i]*Ly[j]) / total_mass + Lrz[i]*Lrz[j] / total_Iz if (total_mass > 0 and total_Iz > 0) else 0.0
+                    if abs(S12) < 1e-20:
+                        continue  # Already separated
+                    S11 = (Lx[i]**2 + Ly[i]**2) / total_mass + Lrz[i]**2 / total_Iz
+                    S22 = (Lx[j]**2 + Ly[j]**2) / total_mass + Lrz[j]**2 / total_Iz
+                    theta = 0.5 * math.atan2(2.0 * S12, S11 - S22)
+                    c = math.cos(theta)
+                    s = math.sin(theta)
+                    Lx[i], Lx[j] = c*Lx[i] + s*Lx[j], -s*Lx[i] + c*Lx[j]
+                    Ly[i], Ly[j] = c*Ly[i] + s*Ly[j], -s*Ly[i] + c*Ly[j]
+                    Lrz[i], Lrz[j] = c*Lrz[i] + s*Lrz[j], -s*Lrz[i] + c*Lrz[j]
+                    Mgen[i], Mgen[j] = c**2*Mgen[i] + s**2*Mgen[j], s**2*Mgen[i] + c**2*Mgen[j]
+
+            # Step 3: Compute participation from rotated/orthogonalized quantities
             for n in range(n_modes):
                 mg = Mgen[n]
                 meff_x  = (Lx[n]**2  / mg) if abs(mg) > 1e-20 else 0.0
@@ -4776,7 +5000,8 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
     
     plots = {}
     elements = model_data.get("model_elements", [])
-    
+    _, _, _grp_anak = _get_group_names(model_data)
+
     try:
         # Create output directory if needed
         plot_dir = os.path.join(output_dir, "plots")
@@ -4808,7 +5033,7 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                 if elem_type == "Column":
                     line_color = 'purple'
                     line_width = 3
-                elif elem_group == 'Secondary':
+                elif elem_group == _grp_anak:
                     line_color = 'darkorange'
                     line_width = 2.0
                 else:
@@ -4888,7 +5113,7 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
                         min_z_viz = min(viz_z_levels) if viz_z_levels else 0.0
                         floor_z_viz = [z for z in viz_z_levels if z > min_z_viz + 100]
 
-                        _, _, sec_beams_viz = classify_elements(elements)
+                        _, _, sec_beams_viz = classify_elements(elements, _grp_anak)
                         viz_panels = build_sub_panels(viz_x_coords, viz_y_coords, sec_beams_viz, floor_z_viz, panel_tol)
                         if not viz_panels:
                             for ix_v in range(len(viz_x_coords) - 1):
@@ -5077,7 +5302,7 @@ def visualize_model_with_local_axes(model_data, output_dir, case_name, sfac_defo
             # Add legend with all elements
             from matplotlib.lines import Line2D
             # Check if any secondary beams exist
-            has_secondary = any(e.get('group') == 'Secondary' for e in elements)
+            has_secondary = any(e.get('group') == _grp_anak for e in elements)
             legend_elements = [
                 Line2D([0], [0], color='purple', linewidth=3, label='Column'),
                 Line2D([0], [0], color='blue', linewidth=2.5, label='Primary Beam'),
@@ -5394,11 +5619,15 @@ def combine_load_cases(results, combo_config, load_patterns):
             # Combine stations using RATIO-BASED interpolation
             # This correctly handles different station counts between patterns
             ref_stations = ref_elem.get('stations', [])
+            elem_length = ref_elem.get('element_length_mm', 0)
             combined_stations = []
 
             for ref_stn in ref_stations:
                 target_ratio = ref_stn.get('station', 0.0)
-                combined_stn = {'station': target_ratio}
+                combined_stn = {
+                    'station': target_ratio,
+                    'distance_mm': ref_stn.get('distance_mm', round(target_ratio * elem_length, 2)),
+                }
 
                 for fk in force_keys:
                     val = 0.0
@@ -5413,8 +5642,35 @@ def combine_load_cases(results, combo_config, load_patterns):
 
             combined_elem = {
                 'element_type': ref_elem.get('element_type'),
+                'element_length_mm': elem_length,
                 'stations': combined_stations,
             }
+
+            # Combine deflection_profile (superpose dy_mm/dz_mm at matching stations)
+            ref_dp = ref_elem.get('deflection_profile')
+            if ref_dp and isinstance(ref_dp, dict):
+                ratios = ref_dp.get('stations_ratio', [])
+                n_pts = len(ratios)
+                combined_dy = [0.0] * n_pts
+                combined_dz = [0.0] * n_pts
+                for pat_name, factor in available.items():
+                    pat_elems = results[pat_name].get('elements', {})
+                    if eid not in pat_elems:
+                        continue
+                    pdp = pat_elems[eid].get('deflection_profile')
+                    if not pdp or not isinstance(pdp, dict):
+                        continue
+                    p_dy = pdp.get('dy_mm', [0.0] * n_pts)
+                    p_dz = pdp.get('dz_mm', [0.0] * n_pts)
+                    for k in range(min(n_pts, len(p_dy))):
+                        combined_dy[k] += factor * p_dy[k]
+                    for k in range(min(n_pts, len(p_dz))):
+                        combined_dz[k] += factor * p_dz[k]
+                combined_elem['deflection_profile'] = {
+                    'stations_ratio': ratios,
+                    'dy_mm': [round(v, 10) for v in combined_dy],
+                    'dz_mm': [round(v, 10) for v in combined_dz],
+                }
 
             # Combine max_deflection if present in any pattern
             has_defl = False
@@ -5461,17 +5717,37 @@ def combine_load_cases(results, combo_config, load_patterns):
     print()
 
 
-def run_analysis(input_path, output_path, generate_plots=True):
+def run_analysis(input_path, output_path, generate_plots=True, analysis_method_override=None):
     """
     Run structural analysis for all load cases.
-    
+
     Args:
         input_path: Path to Model data.json
         output_path: Path to save Analysis.json
         generate_plots: Whether to generate visualization plots (default: True)
+        analysis_method_override: "ELM" or "DAM" (overrides JSON value if provided)
     """
     data = get_model_data(input_path)
     if not data: return
+
+    # --- Determine analysis method ---
+    # Priority: CLI override > JSON seismic_parameters > default "ELM"
+    if analysis_method_override:
+        analysis_method = analysis_method_override.upper()
+    else:
+        analysis_method = data.get("seismic_parameters", {}).get("analysis_method", "ELM").upper()
+    if analysis_method not in ("ELM", "DAM"):
+        print(f"  [WARNING] Unknown analysis method '{analysis_method}', defaulting to ELM")
+        analysis_method = "ELM"
+
+    _, _, _grp_balok_anak_main = _get_group_names(data)
+
+    method_desc = ("Effective Length Method" if analysis_method == "ELM"
+                   else "Direct Analysis Method (0.8*tau_b*EI)")
+    print(f"\n  Analysis Method: {analysis_method} - {method_desc}")
+
+    # Store in data dict so all sub-functions can access it
+    data["_analysis_method"] = analysis_method
 
     # Get output directory for plots
     output_dir = os.path.dirname(os.path.abspath(output_path))
@@ -5482,12 +5758,37 @@ def run_analysis(input_path, output_path, generate_plots=True):
     
     # === DYNAMIC LOAD PATTERNS (SAP2000-like) ===
     load_patterns = data.get('load_patterns', None)
-    
+
+    # === AUTO-GENERATE PATTERN LIVE LOAD ZONES ===
+    if load_patterns and 'LIVE' in load_patterns:
+        struct_config = detect_structure_config_from_grid(data)
+        grid_x = struct_config.get('x_coords', [])
+        grid_y = struct_config.get('y_coords', [])
+        z_levels = struct_config.get('z_levels', [])
+        min_z = min(z_levels) if z_levels else 0.0
+        floor_z_list = [z for z in z_levels if z > min_z + 100]
+
+        sec_beams = [e for e in data.get('model_elements', [])
+                     if e.get('group', '') == _grp_balok_anak_main]
+        zones = identify_zones(grid_x, grid_y, sec_beams, floor_z_list)
+
+        if len(zones) >= 2:
+            live_def = load_patterns['LIVE']
+            for zone in zones:
+                zname = "LIVE_ZONE_{}".format(zone['zone_id'])
+                load_patterns[zname] = {
+                    "type": live_def.get("type", "Live"),
+                    "self_weight_mult": 0,
+                    "pressure_MPa": live_def.get("pressure_MPa", 0),
+                    "zone_filter": zone
+                }
+            print("  Pattern Live Load: {} zones auto-generated".format(len(zones)))
+
     if load_patterns:
         # NEW PATH: iterate over user-defined load patterns
         print(f"\n  Load Patterns from JSON: {list(load_patterns.keys())}")
-        
-        for pat_name, pat_def in load_patterns.items():
+
+        for pat_name, pat_def in list(load_patterns.items()):
             print(f"\n{'='*60}")
             print(f"Running Load Pattern: {pat_name} (type={pat_def.get('type','?')})")
             print(f"{'='*60}")
@@ -5510,6 +5811,19 @@ def run_analysis(input_path, output_path, generate_plots=True):
                 plot_results[pat_name] = visualize_model_with_local_axes(data, output_dir, pat_name, sfac_defo=sfac)
             else:
                 plot_results[pat_name] = {"status": "skipped", "reason": "analysis failed or plots disabled"}
+
+        # Verify superposition: LIVE ≈ Σ LIVE_ZONE_i
+        zone_keys = sorted(k for k in results if k.startswith('LIVE_ZONE_'))
+        if zone_keys and 'LIVE' in results:
+            live_rz = results['LIVE'].get('summary', {}).get('total_reaction_z', 0)
+            zone_rz = sum(results[zk].get('summary', {}).get('total_reaction_z', 0)
+                          for zk in zone_keys)
+            residual = abs(live_rz - zone_rz)
+            pct = residual / abs(live_rz) * 100 if abs(live_rz) > 1e-6 else 0
+            print("  Superposition check: LIVE Rz={:.2f}, Sum(zones)={:.2f}, "
+                  "residual={:.4f} N ({:.3f}%)".format(live_rz, zone_rz, residual, pct))
+            if pct > 1.0:
+                print("  [WARNING] Superposition residual > 1%!")
     else:
         # LEGACY PATH: hard-coded load cases (backward compatibility)
         load_cases = [
@@ -5571,7 +5885,7 @@ def run_analysis(input_path, output_path, generate_plots=True):
     
     if seismic_params:
         print(f"\n{'='*66}")
-        print(f"  MODAL ANALYSIS — Eigenvalue (Period & Frequency)")
+        print(f"  MODAL ANALYSIS - Eigenvalue (Period & Frequency)")
         print(f"{'='*66}")
         
         modal_result = run_modal_analysis(copy.deepcopy(data))
@@ -5589,7 +5903,7 @@ def run_analysis(input_path, output_path, generate_plots=True):
     if seismic_params:
         for eq_dir, eq_key in [('EQx', 'SeismicX'), ('EQy', 'SeismicY')]:
             print(f"\n{'='*66}")
-            print(f"  SEISMIC ANALYSIS — {eq_dir} (SNI 1726 ELF)")
+            print(f"  SEISMIC ANALYSIS - {eq_dir} (SNI 1726 ELF)")
             print(f"{'='*66}")
             
             eq_result = run_seismic_analysis(copy.deepcopy(data), direction=eq_dir)
@@ -5625,7 +5939,7 @@ def run_analysis(input_path, output_path, generate_plots=True):
             else:
                 print(f"  [ERROR] Seismic analysis {eq_dir} failed!")
     else:
-        print("\n[INFO] No seismic_parameters in model data — skipping seismic analysis")
+        print("\n[INFO] No seismic_parameters in model data - skipping seismic analysis")
 
     # ========== LOAD COMBINATION SUPERPOSITION ==========
     combo_config = data.get('load_combination_config', {})
@@ -5652,11 +5966,20 @@ if __name__ == "__main__":
     input_json = os.path.join(base_dir, "..", "Model data.json")
     output_json = os.path.join(base_dir, "Analysis.json")
 
-    if len(sys.argv) < 3:
-        if os.path.exists(input_json):
-            run_analysis(input_json, output_json)
+    # Parse CLI arguments
+    positional = []
+    cli_method = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--method="):
+            cli_method = arg.split("=", 1)[1].upper()
         else:
-             # Fallback for direct execution if files are adjacent
-             run_analysis("Model data.json", "Analysis.json")
-    else:
-        run_analysis(sys.argv[1], sys.argv[2])
+            positional.append(arg)
+
+    if len(positional) >= 2:
+        input_json = positional[0]
+        output_json = positional[1]
+    elif not os.path.exists(input_json):
+        input_json = "Model data.json"
+        output_json = "Analysis.json"
+
+    run_analysis(input_json, output_json, analysis_method_override=cli_method)
