@@ -31,11 +31,13 @@ doc = HOST_APP.doc
 
 # ============================================================
 # KONFIGURASI & KONSTANTA
+#UNTUK_SAMBUNGAN_BAJA — Nama tipe sambungan Revit dan toleransi geometri
 # ============================================================
 
 CONNECTION_TYPE_A = "Double side end plate with safety bolt"
 CONNECTION_TYPE_B = "Moment end plate"
 CONNECTION_TYPE_C = "Clip angle"
+CONNECTION_TYPE_D = "Splice joint"
 
 # Toleransi geometric (mm) untuk deteksi titik di atas segmen balok
 GEO_TOLERANCE_MM = 5.0
@@ -47,10 +49,11 @@ OUTPUT_JSON = os.path.join(SCRIPT_DIR, "Connection Result.json")
 
 # ============================================================
 # FUNGSI 1: load_result_json
+#UNTUK_SAMBUNGAN_BAJA — Load data elemen (section, topology, group, axes) dari Result.json
 # ============================================================
 
 def load_result_json(path):
-    """Baca Result.json → return (model_elements, seismic_params)."""
+    """Baca Result.json → return (model_elements, seismic_params, group_names)."""
     if not os.path.exists(path):
         raise RuntimeError(
             "Result.json tidak ditemukan di:\n{}\n"
@@ -61,18 +64,25 @@ def load_result_json(path):
     model_data    = data.get("model_data", {})
     elements      = model_data.get("model_elements", [])
     seismic_params = model_data.get("seismic_parameters", {})
+    gn = model_data.get("group_names", {})
+    group_names = {
+        "kolom":       gn.get("kolom",       "Kolom"),
+        "balok_induk": gn.get("balok_induk", "Balok Induk"),
+        "balok_anak":  gn.get("balok_anak",  "Balok Anak"),
+    }
     if not elements:
         raise RuntimeError("model_elements kosong di Result.json.")
-    return elements, seismic_params
+    return elements, seismic_params, group_names
 
 # ============================================================
 # FUNGSI 2: load_connection_types
+#UNTUK_SAMBUNGAN_BAJA — Load tipe sambungan (A/B/C/D) dari Revit project
 # ============================================================
 
 def load_connection_types(doc):
-    """Cari connection types A, B, C di project Revit."""
+    """Cari connection types A, B, C, D di project Revit."""
     collector = FilteredElementCollector(doc).OfClass(StructuralConnectionHandlerType)
-    types = {"A": None, "B": None, "C": None}
+    types = {"A": None, "B": None, "C": None, "D": None}
     found_names = []
     for ct in collector:
         name = ct.Name
@@ -83,10 +93,15 @@ def load_connection_types(doc):
             types["B"] = ct.Id
         elif name == CONNECTION_TYPE_C:
             types["C"] = ct.Id
+        elif name == CONNECTION_TYPE_D:
+            types["D"] = ct.Id
 
     missing = [
         "{} ({})".format(label, name)
-        for label, name in [("A", CONNECTION_TYPE_A), ("B", CONNECTION_TYPE_B), ("C", CONNECTION_TYPE_C)]
+        for label, name in [
+            ("A", CONNECTION_TYPE_A), ("B", CONNECTION_TYPE_B),
+            ("C", CONNECTION_TYPE_C), ("D", CONNECTION_TYPE_D),
+        ]
         if types[label] is None
     ]
     if missing:
@@ -118,17 +133,25 @@ def cleanup_existing_connections(doc):
 
 # ============================================================
 # FUNGSI 4: build_node_map
+#UNTUK_SAMBUNGAN_BAJA — Index spasial: node_key → {cols, beams} untuk deteksi semua tipe joint
 # ============================================================
 
 def _node_key(coords):
     """Round koordinat mm ke int tuple untuk matching."""
     return (int(round(coords[0])), int(round(coords[1])), int(round(coords[2])))
 
-def build_node_map(model_elements):
+def build_node_map(model_elements, group_names=None):
     """
     Pisahkan elemen ke columns / primary_beams / secondary_beams.
     Bangun node_map: node_key → {"cols": [elem], "beams": [elem]}
     """
+    if group_names is None:
+        group_names = {"kolom": "Kolom", "balok_induk": "Balok Induk", "balok_anak": "Balok Anak"}
+
+    grp_kolom = group_names["kolom"]
+    grp_induk = group_names["balok_induk"]
+    grp_anak  = group_names["balok_anak"]
+
     columns        = []
     primary_beams  = []
     secondary_beams = []
@@ -145,21 +168,21 @@ def build_node_map(model_elements):
         start = topo.get("start_node", [0, 0, 0])
         end   = topo.get("end_node",   [0, 0, 0])
 
-        if grp == "Column":
+        if grp == grp_kolom:
             columns.append(elem)
             for node in [start, end]:
                 k = _node_key(node)
                 _ensure(k)
                 node_map[k]["cols"].append(elem)
 
-        elif grp in ("Beam Exterior", "Beam Interior"):
+        elif grp == grp_induk:
             primary_beams.append(elem)
             for node in [start, end]:
                 k = _node_key(node)
                 _ensure(k)
                 node_map[k]["beams"].append(elem)
 
-        elif grp == "Secondary":
+        elif grp == grp_anak:
             secondary_beams.append(elem)
             # Secondary tidak masuk node_map utama (endpoint di midspan)
 
@@ -167,6 +190,7 @@ def build_node_map(model_elements):
 
 # ============================================================
 # FUNGSI 5: detect_column_beam_joints
+#UNTUK_SAMBUNGAN_BAJA — Deteksi joint balok-kolom → moment end-plate (Tipe B)
 # ============================================================
 
 def detect_column_beam_joints(node_map, columns):
@@ -220,6 +244,16 @@ def detect_column_beam_joints(node_map, columns):
 # HELPER: Arah balok dari local_axes
 # ============================================================
 
+def _revit_id(elem):
+    """Konversi JSON element ID ke physical Revit ElementId integer.
+    Kolom punya fabricated ID (physical_id * 1000 + story_num).
+    Balok punya physical ID langsung.
+    """
+    eid = elem.get("id", 0)
+    if elem.get("type") == "Column":
+        return eid // 1000
+    return eid
+
 def _get_beam_dir(beam_elem):
     """Return (dx, dy, dz) arah longitudinal balok dari local_axes."""
     axes = beam_elem.get("local_axes", {})
@@ -231,6 +265,7 @@ def _dot(a, b):
 
 # ============================================================
 # FUNGSI 6: classify_joint
+#UNTUK_SAMBUNGAN_BAJA — Klasifikasi web vs flange connection berdasar orientasi kolom → Tipe A atau B
 # ============================================================
 
 def classify_joint(doc, joint):
@@ -239,7 +274,7 @@ def classify_joint(doc, joint):
     list sub-connections [{"type":"A"|"B", "beam_ids":[int]}].
     """
     col_elem = joint["col"]
-    col_id_int = col_elem.get("id")
+    col_id_int = _revit_id(col_elem)
     beams = joint["beams"]
 
     # Ambil orientasi kolom dari Revit FamilyInstance.GetTransform()
@@ -296,6 +331,7 @@ def classify_joint(doc, joint):
 
 # ============================================================
 # FUNGSI 7: create_connection
+#UNTUK_SAMBUNGAN_BAJA — Buat StructuralConnectionHandler di Revit (primary + secondary elements)
 # ============================================================
 
 def create_connection(doc, primary_id, secondary_ids, type_id):
@@ -314,6 +350,7 @@ def create_connection(doc, primary_id, secondary_ids, type_id):
 
 # ============================================================
 # FUNGSI 8: detect_secondary_beam_joints
+#UNTUK_SAMBUNGAN_BAJA — Deteksi joint balok anak-balok induk → clip angle (Tipe C)
 # ============================================================
 
 def _point_on_segment(P, A, B, tol_mm):
@@ -383,7 +420,65 @@ def detect_secondary_beam_joints(secondary_beams, primary_beams):
     return joints
 
 # ============================================================
-# FUNGSI 9: copy_to_upper_levels
+# FUNGSI 9: detect_column_splice_joints
+#UNTUK_SAMBUNGAN_BAJA — Deteksi titik splice kolom antar lantai → column splice (Tipe D)
+# ============================================================
+
+def detect_column_splice_joints(node_map):
+    """
+    Deteksi titik splice kolom-kolom.
+    Splice terjadi di node dimana satu kolom berakhir (end_node)
+    dan kolom lain dimulai (start_node) dengan physical Revit ID berbeda.
+    Ini terjadi jika fabrikasi kolom melebihi batas panjang (misal 12m).
+    Return list[{"lower_col": elem, "upper_col": elem, "node": tuple}]
+    """
+    splices = []
+    seen = set()
+
+    for node_key, entry in node_map.items():
+        cols_at_node = entry.get("cols", [])
+        if len(cols_at_node) < 2:
+            continue
+
+        # Pisahkan kolom yang berakhir vs dimulai di node ini
+        ending = []
+        starting = []
+
+        for col in cols_at_node:
+            topo = col.get("topology", {})
+            end_key = _node_key(topo.get("end_node", [0, 0, 0]))
+            start_key = _node_key(topo.get("start_node", [0, 0, 0]))
+
+            if end_key == node_key:
+                ending.append(col)
+            if start_key == node_key:
+                starting.append(col)
+
+        # Splice = kolom bawah berakhir + kolom atas dimulai, physical ID berbeda
+        for lower_col in ending:
+            for upper_col in starting:
+                lower_phys = _revit_id(lower_col)
+                upper_phys = _revit_id(upper_col)
+
+                if lower_phys == upper_phys:
+                    continue
+
+                pair_key = (lower_phys, upper_phys)
+                if pair_key in seen:
+                    continue
+                seen.add(pair_key)
+
+                splices.append({
+                    "lower_col": lower_col,
+                    "upper_col": upper_col,
+                    "node":      node_key,
+                })
+
+    return splices
+
+# ============================================================
+# FUNGSI 10: copy_to_upper_levels
+#UNTUK_SAMBUNGAN_BAJA — Copy sambungan story bawah ke story atas via ElementTransformUtils
 # ============================================================
 
 def _mm_to_ft(mm):
@@ -398,7 +493,9 @@ def copy_to_upper_levels(doc, base_conn_ids, sorted_z_mm):
         return []
 
     base_z = sorted_z_mm[0]
-    ids_to_copy = List[ElementId]([ElementId(cid) for cid in base_conn_ids])
+    ids_to_copy = List[ElementId]()
+    for cid in base_conn_ids:
+        ids_to_copy.Add(ElementId(cid))
     copied = []
 
     for upper_z in sorted_z_mm[1:]:
@@ -412,7 +509,8 @@ def copy_to_upper_levels(doc, base_conn_ids, sorted_z_mm):
     return copied
 
 # ============================================================
-# FUNGSI 10: run_connection_design — Orkestrasi Utama
+# FUNGSI 11: run_connection_design — Orkestrasi Utama
+#UNTUK_SAMBUNGAN_BAJA — Pipeline utama: load JSON → detect joints → classify → create → copy → export
 # ============================================================
 
 def run_connection_design(doc):
@@ -420,9 +518,9 @@ def run_connection_design(doc):
     out.print_md("# Steel Connection — Fase 1\n\n---")
 
     # ---- 1. Load JSON ----
-    print("[1/8] Membaca Result.json ...")
+    print("[1/9] Membaca Result.json ...")
     try:
-        model_elements, seismic_params = load_result_json(RESULT_JSON)
+        model_elements, seismic_params, group_names = load_result_json(RESULT_JSON)
     except RuntimeError as e:
         out.print_md("**ERROR**: {}".format(str(e)))
         return
@@ -433,7 +531,7 @@ def run_connection_design(doc):
     print("  N_STORY={}, H={}mm, frame_type={}".format(n_story, h_mm, frame_type))
 
     # ---- 2. Load connection types ----
-    print("[2/8] Mencari tipe sambungan di Revit ...")
+    print("[2/9] Mencari tipe sambungan di Revit ...")
     try:
         conn_types = load_connection_types(doc)
     except RuntimeError as e:
@@ -443,22 +541,23 @@ def run_connection_design(doc):
     print("  Tipe A ditemukan: {}".format(CONNECTION_TYPE_A))
     print("  Tipe B ditemukan: {}".format(CONNECTION_TYPE_B))
     print("  Tipe C ditemukan: {}".format(CONNECTION_TYPE_C))
+    print("  Tipe D ditemukan: {}".format(CONNECTION_TYPE_D))
 
     # ---- 3. Cleanup ----
-    print("[3/8] Menghapus sambungan lama ...")
+    print("[3/9] Menghapus sambungan lama ...")
     with revit.Transaction("Delete Old Connections"):
         cleanup_existing_connections(doc)
 
     # ---- 4. Build node map ----
-    print("[4/8] Membangun node map ...")
-    node_map, columns, primary_beams, secondary_beams = build_node_map(model_elements)
+    print("[4/9] Membangun node map ...")
+    node_map, columns, primary_beams, secondary_beams = build_node_map(model_elements, group_names)
     print("  Kolom      : {}".format(len(columns)))
     print("  Balok induk: {}".format(len(primary_beams)))
     print("  Balok anak : {}".format(len(secondary_beams)))
     secondary_present = len(secondary_beams) > 0
 
     # ---- 5. Detect joints balok-kolom ----
-    print("[5/8] Mendeteksi joints balok-kolom ...")
+    print("[5/9] Mendeteksi joints balok-kolom ...")
     joints = detect_column_beam_joints(node_map, columns)
     print("  {} joints terdeteksi di story bawah.".format(len(joints)))
 
@@ -467,16 +566,22 @@ def run_connection_design(doc):
                      "Periksa Result.json dan model Revit.")
         return
 
-    # ---- 6. Create sambungan ----
-    print("[6/8] Membuat sambungan ...")
+    # ---- 6. Detect splice joints ----
+    splice_conn_ids = []
+    print("[6/9] Mendeteksi splice kolom-kolom ...")
+    splice_joints = detect_column_splice_joints(node_map)
+    print("  {} splice terdeteksi.".format(len(splice_joints)))
+
+    # ---- 7. Create semua sambungan (1 transaksi) ----
+    print("[7/9] Membuat sambungan ...")
     all_connections  = []
     base_conn_ids    = []
 
     with revit.Transaction("Create Steel Connections"):
 
-        # 6a. Sambungan balok-kolom (Tipe A & B)
+        # 7a. Sambungan balok-kolom (Tipe A & B)
         for joint in joints:
-            col_id = joint["col"]["id"]
+            col_id = _revit_id(joint["col"])
             sub_conns = classify_joint(doc, joint)
 
             for sc in sub_conns:
@@ -501,7 +606,7 @@ def run_connection_design(doc):
                     print("  [ERR] Tipe {} | col={} beam={} | {}".format(
                         type_key, col_id, beam_ids, ex))
 
-        # 6b. Sambungan balok anak (Tipe C)
+        # 7b. Sambungan balok anak (Tipe C)
         if secondary_present:
             sec_joints = detect_secondary_beam_joints(secondary_beams, primary_beams)
             print("  {} joints balok anak terdeteksi.".format(len(sec_joints)))
@@ -528,14 +633,39 @@ def run_connection_design(doc):
                         print("  [ERR] Tipe C | primary={} secondary={} | {}".format(
                             prim_id, sec_id, ex))
 
-    print("  {} sambungan dibuat di story bawah.".format(len(base_conn_ids)))
+        # 7c. Sambungan splice kolom-kolom (Tipe D)
+        if splice_joints and conn_types.get("D"):
+            type_id_d = conn_types["D"]
+            for sj in splice_joints:
+                lower_id = _revit_id(sj["lower_col"])
+                upper_id = _revit_id(sj["upper_col"])
 
-    # ---- 7. Copy ke story atas ----
+                try:
+                    conn_int_id = create_connection(doc, lower_id, [upper_id], type_id_d)
+                    splice_conn_ids.append(conn_int_id)
+                    all_connections.append({
+                        "type":        "Tipe D",
+                        "lower_col_id": lower_id,
+                        "upper_col_id": upper_id,
+                        "conn_id":      conn_int_id,
+                        "level":        "z={:.0f}mm".format(sj["node"][2]),
+                        "joint_node":   list(sj["node"]),
+                    })
+                    print("  [OK] Tipe D | lower={} upper={} z={}mm".format(
+                        lower_id, upper_id, sj["node"][2]))
+                except Exception as ex:
+                    print("  [ERR] Tipe D | lower={} upper={} | {}".format(
+                        lower_id, upper_id, ex))
+        elif splice_joints and not conn_types.get("D"):
+            print("  [WARN] Splice terdeteksi tapi tipe '{}' belum di-load.".format(
+                CONNECTION_TYPE_D))
+    print("  {} sambungan story bawah, {} splice.".format(
+        len(base_conn_ids), len(splice_conn_ids)))
+
+    # ---- 8. Copy ke story atas (hanya A/B/C, bukan splice) ----
     copied_ids = []
     if n_story > 1 and base_conn_ids:
-        print("[7/8] Copy sambungan ke story atas ...")
-        sorted_z_mm = [i * h_mm for i in range(n_story + 1)]  # z dari setiap lantai
-        # Ambil hanya elevasi yang relevan (joints ada di kolom end_node)
+        print("[8/9] Copy sambungan ke story atas ...")
         col_end_z_set = set()
         for col in columns:
             z = col.get("topology", {}).get("end_node", [0, 0, 0])[2]
@@ -547,16 +677,17 @@ def run_connection_design(doc):
         print("  {} sambungan di-copy ke {} story atas.".format(
             len(copied_ids), len(sorted_z_mm) - 1))
     else:
-        print("[7/8] Hanya 1 story, skip copy.")
+        print("[8/9] Hanya 1 story, skip copy.")
 
-    # ---- 8. Export & Display ----
-    print("[8/8] Ekspor Connection Result.json ...")
+    # ---- 9. Export & Display ----
+    print("[9/9] Ekspor Connection Result.json ...")
     output_data = {
-        "frame_type":   frame_type,
-        "n_story":      n_story,
-        "total":        len(base_conn_ids),
-        "copied_total": len(copied_ids),
-        "connections":  all_connections,
+        "frame_type":    frame_type,
+        "n_story":       n_story,
+        "total":         len(base_conn_ids) + len(splice_conn_ids),
+        "copied_total":  len(copied_ids),
+        "splice_total":  len(splice_conn_ids),
+        "connections":   all_connections,
     }
     with open(OUTPUT_JSON, "w") as f:
         json.dump(output_data, f, indent=2)
@@ -566,6 +697,7 @@ def run_connection_design(doc):
     count_a = sum(1 for c in all_connections if c["type"] == "Tipe A")
     count_b = sum(1 for c in all_connections if c["type"] == "Tipe B")
     count_c = sum(1 for c in all_connections if c["type"] == "Tipe C")
+    count_d = sum(1 for c in all_connections if c["type"] == "Tipe D")
 
     copy_row = ""
     if copied_ids:
@@ -579,17 +711,20 @@ def run_connection_design(doc):
         "| **A** | {type_a} | {cnt_a} |\n"
         "| **B** | {type_b} | {cnt_b} |\n"
         "| **C** | {type_c} | {cnt_c} |\n"
-        "| **Total** | *(story bawah)* | **{total}** |"
+        "| **D** | {type_d} | {cnt_d} |\n"
+        "| **Total** | *(story bawah + splice)* | **{total}** |"
         "{copy_row}\n\n"
         "Output: `{output}`"
     ).format(
         type_a   = CONNECTION_TYPE_A,
         type_b   = CONNECTION_TYPE_B,
         type_c   = CONNECTION_TYPE_C,
+        type_d   = CONNECTION_TYPE_D,
         cnt_a    = count_a,
         cnt_b    = count_b,
         cnt_c    = count_c,
-        total    = len(base_conn_ids),
+        cnt_d    = count_d,
+        total    = len(base_conn_ids) + len(splice_conn_ids),
         copy_row = copy_row,
         output   = OUTPUT_JSON,
     )
